@@ -1,0 +1,74 @@
+model FlashcardSet {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String   @db.ObjectId
+  title       String
+  description String?
+  isPublic    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  cards         Card[]
+  studySessions StudySession[]
+
+  @@index([userId, isPublic])
+  @@map("flashcard_sets")
+}
+
+model Card {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  setId           String   @db.ObjectId
+  term            String
+  definition      String
+  audioUrl        String?
+  exampleSentence String?
+  imageUrl        String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  set          FlashcardSet       @relation(fields: [setId], references: [id], onDelete: Cascade)
+  userProgress UserCardProgress[]
+
+  @@index([setId])
+  @@map("cards")
+}
+
+enum ProgressStatus {
+  NEW
+  LEARNING
+  MASTERED
+}
+
+model UserCardProgress {
+  id             String         @id @default(auto()) @map("_id") @db.ObjectId
+  userId         String         @db.ObjectId
+  cardId         String         @db.ObjectId
+  status         ProgressStatus @default(NEW)
+  streak         Int            @default(0)
+  correctCount   Int            @default(0)
+  wrongCount     Int            @default(0)
+  nextReviewAt   DateTime       @default(now())
+  lastReviewedAt DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  card Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, cardId])
+  @@index([userId, nextReviewAt, status])
+  @@map("user_card_progress")
+}
+
+model StudySession {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String   @db.ObjectId
+  setId       String   @db.ObjectId
+  mode        String // FLASHCARD, LEARN, QUIZ, WRITE
+  score       Int      @default(0)
+  totalCards  Int      @default(0)
+  completedAt DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  set FlashcardSet @relation(fields: [setId], references: [id], onDelete: Cascade)
+
+  @@index([userId, setId])
+  @@map("study_sessions")
+}

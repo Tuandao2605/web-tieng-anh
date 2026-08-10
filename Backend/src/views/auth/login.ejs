@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+    <body>
+        <div class="max-w-[400px] mx-auto">
+            <h1 class="text-center text-3xl py-3">Login</h1>
+            <form method="post">
+                <div class="mb-3">
+                    <label for="" class="block font-medium mb-1">Email</label>
+                    <input name="email" type="text" placeholder="Email..." class="px-3 py-1 border border-[#ddd] w-full outline-none rounded-sm"/>
+                </div>
+                <div class="mb-3">
+                    <label for="" class="block font-medium mb-1">Password</label>
+                    <input name="password" type="password" placeholder="Password..." class="px-3 py-1 border border-[#ddd] w-full outline-none rounded-sm"/>
+                </div>
+                <button class="w-full bg-green-700 text-white py-1 cursor-pointer rounded-sm">Login</button>
+            </form>
+        </div>
+        <% if(typeof message !== 'undefined' && message.length) { %>
+            <script>
+                Swal.fire({
+                    title: "<%= message %>",
+                    icon: "success",
+                    draggable: true,
+                });
+            </script>
+        <% } %>
+    </body>
+</html>

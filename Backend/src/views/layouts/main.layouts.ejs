@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <%- style %>
+</head>
+<body>
+    <header>
+        <h1>Header</h1>
+        <% if(user){ %>
+            <h2>Hello: <%= user.name %></h2>
+            <button class="logout-btn">Log out</button>
+            <form action="/auth/logout" method="post" class="logout-form"></form>
+        <% } else { %>
+            <a href="/auth/login">Login</a>
+            <a href="/auth/Register">Register</a>
+        <% } %>
+    </header>
+    <%- body %>
+    <footer>
+        <h1>Footer</h1>
+    </footer>
+    <%- script %>
+    <script>
+        const logoutBtn = document.querySelector('.logout-btn');
+        const logoutForm = document.querySelector('.logout-form');
+        logoutBtn.addEventListener('click', () => {
+            logoutForm.submit();
+        })
+    </script>
+</body>
+</html>

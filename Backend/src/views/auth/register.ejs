@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Register</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+</head>
+<body>
+    <div class="max-w-[400px] mx-auto">
+        <h1 class="text-center text-3xl py-3">Register</h1>
+        <form method="post">
+        <div class="mb-3">
+            <label for="" class="block font-medium mb-1">Name</label>
+            <input name="name" type="text" placeholder="Name..." class="px-3 py-1 border border-[#ddd] w-full outline-none rounded-sm"/>
+            <%- errors.name ? `<span class="text-red-600">${errors.name}</span>`: "" %>
+        </div>
+        <div class="mb-3">
+            <label for="" class="block font-medium mb-1">Email</label>
+            <input name="email" type="text" placeholder="Email..." class="px-3 py-1 border border-[#ddd] w-full outline-none rounded-sm"/>
+            <%- errors.email ? `<span class="text-red-600">${errors.email}</span>`: "" %>
+        </div>
+        <div class="mb-3">
+            <label for="" class="block font-medium mb-1">Password</label>
+            <input name="password" type="text" placeholder="Password..." class="px-3 py-1 border border-[#ddd] w-full outline-none rounded-sm"/>
+            <%- errors.password ? `<span class="text-red-600">${errors.password}</span>` : "" %>
+        </div>
+        <button class="w-full bg-green-700 text-white py-1 cursor-pointer rounded-sm">Login</button>
+    </form>
+    </div>
+</body>
+</html>

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+<body>
+    <h1></h1>
+    <button class="disconnect-btn">Disconnect</button>
+    <button class="send-message-btn">Send Message</button>
+    <button class="join-room-btn">Join</button>
+    <button class="send-noti-btn">Send Noti</button>
+    <script type="module">
+        const h1 = document.querySelector('h1');
+         import { io } from "https://cdn.socket.io/4.8.3/socket.io.esm.min.js";
+         const socket = io("ws://localhost:8000",{
+            auth: {
+                token: "123",
+            },
+            extraHeaders: {
+               "x-username": localStorage.getItem("username"),
+            }
+         })
+         socket.on("connect", () => {
+            console.log("Da ket noi toi server socket", socket.id);
+         })
+         socket.on("disconnect", () => {
+            console.log("Da ngat ket noi toi server");
+         })
+         socket.on("new-message", (data) => {
+            h1.innerText = data.value;
+         })
+         socket.on("connect_error", (error) => {
+            console.log(error);
+            
+         })
+         let isJoin = false;
+         const disconnectBtn = document.querySelector('.disconnect-btn');
+         const sendmessageBtn = document.querySelector('.send-message-btn');
+         const sendNotiBtn = document.querySelector('.send-noti-btn');
+         const renderJoinBtn = () => {
+            joinBtn.innerText = isJoin ? "Leave" : "Join";
+         }
+         const joinBtn = document.querySelector('.join-room-btn');
+         joinBtn.addEventListener("click", () => {
+            if(!isJoin){
+               socket.emit("join-room","unicode", ({status, socketsId}) => {
+                  console.log("Socket da join: ", socketsId);
+                  
+                  if(status === "ok"){
+                     isJoin = true;
+                  }
+                  renderJoinBtn();
+               })
+            } else {
+               socket.emit("leave-room", "unicode", ({status}) => {
+                  if(status === "ok"){
+                     isJoin = false;
+                     renderJoinBtn();
+                  }
+               })
+            }
+         })
+         disconnectBtn.addEventListener("click", () => {
+            socket.disconnect();
+         })
+         
+         sendmessageBtn.addEventListener("click", () => {
+            socket.emit("send-message", "Tin nhan tu front-end");
+         })
+
+         const notifications = io("ws://localhost:8000/notifications")
+         sendNotiBtn.addEventListener("click", () => {
+            notifications.emit("send-noti", "Thong bao moi");
+         })
+         notifications.on("new-noti", (data) => {
+            console.log(data);
+         })
+    </script>
+</body>
+</html>
