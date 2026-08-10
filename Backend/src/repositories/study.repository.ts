@@ -64,6 +64,31 @@ class StudyRepository {
     });
   }
 
+  async addCardsToSet(setId: string, userId: string, cards: CreateCardInput[]) {
+    const existing = await this.db.flashcardSet.findUnique({
+      where: { id: setId },
+      select: { userId: true },
+    });
+
+    if (!existing) throw new Error("Flashcard set not found");
+    if (existing.userId !== userId) throw new Error("Forbidden");
+
+    // Chèn hàng loạt thẻ mới vào bộ
+    await this.db.card.createMany({
+      data: cards.map((card) => ({
+        setId,
+        term: card.term,
+        definition: card.definition,
+        audioUrl: card.audioUrl,
+        exampleSentence: card.exampleSentence,
+        imageUrl: card.imageUrl,
+      })),
+    });
+
+    // Trả về bộ thẻ kèm danh sách thẻ đầy đủ sau khi chèn
+    return this.findSetById(setId);
+  }
+
   async listSets(userId?: string) {
     return this.db.flashcardSet.findMany({
       where: userId

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { FlashcardSet, QuizQuestion, SubmitAnswerResult, CreateSetInput } from '../types';
+import type { FlashcardSet, QuizQuestion, SubmitAnswerResult, CreateSetInput, CreateCardInput } from '../types';
 import { apiClient } from '../api/apiClient';
 
 interface StudyState {
@@ -24,6 +24,7 @@ interface StudyState {
   syncProgress: () => Promise<any>;
   setCurrentCardIndex: (index: number) => void;
   resetSession: () => void;
+  bulkAddCards: (setId: string, cards: CreateCardInput[]) => Promise<FlashcardSet>;
 }
 
 const generateUUID = () => {
@@ -79,12 +80,24 @@ export const useStudyStore = create<StudyState>((set, get) => ({
     }
   },
 
+  bulkAddCards: async (setId: string, cards: CreateCardInput[]) => {
+    set({ isLoading: true, error: null });
+    try {
+      const updatedSet: FlashcardSet = await apiClient.post(`/sets/${setId}/cards/bulk`, { cards });
+      set({ currentSet: updatedSet, isLoading: false });
+      return updatedSet;
+    } catch (err: any) {
+      set({ error: err.message || 'Thêm từ hàng loạt thất bại', isLoading: false });
+      throw err;
+    }
+  },
+
   generateQuiz: async (setId: string, limit: number = 10) => {
     set({ isLoading: true, error: null });
     try {
       const response: any = await apiClient.post(`/sets/${setId}/quiz?limit=${limit}`);
       const questions: QuizQuestion[] = response?.questions ?? (Array.isArray(response) ? response : []);
-      
+
       set({
         quizQuestions: questions,
         currentCardIndex: 0,

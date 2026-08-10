@@ -1,6 +1,6 @@
 import { redisClient } from "../utils/redis";
 import { cacheService } from "./cache.service";
-import studyRepository, { CreateSetInput } from "../repositories/study.repository";
+import studyRepository, { CreateCardInput, CreateSetInput } from "../repositories/study.repository";
 
 const redis = redisClient.getInstance();
 
@@ -39,24 +39,24 @@ export interface SessionProgressState {
 }
 
 export class StudyService {
-  /**
-   * 1. Create a Flashcard Set and Invalidate Related Redis Caches
-   */
+
   async createSet(input: CreateSetInput) {
     const newSet = await studyRepository.createSet(input);
-    
-    // Invalidate public sets cache list tag
+
     await cacheService.invalidateTag(["sets", "public"]);
 
     return newSet;
   }
 
-  /**
-   * 2. Get Flashcard Set with Cache-Aside Strategy
-   * Redis Key: set:{setId}:cards (TTL: 1 hour)
-   */
   async listSets(userId?: string) {
     return studyRepository.listSets(userId);
+  }
+
+  async addCardsToSet(setId: string, userId: string, cards: CreateCardInput[]) {
+    const updatedSet = await studyRepository.addCardsToSet(setId, userId, cards);
+    await cacheService.invalidateTag(["sets", `set:${setId}`]);
+
+    return updatedSet;
   }
 
   async updateSet(setId: string, userId: string, input: CreateSetInput) {
@@ -97,7 +97,7 @@ export class StudyService {
 
     for (const card of cardsToQuiz) {
       const distractors = await studyRepository.getRandomDistractors(setId, card.id, 3);
-      
+
       const options = [
         { definition: card.definition, isCorrect: true },
         ...distractors.map((d: any) => ({ definition: d.definition, isCorrect: false })),
