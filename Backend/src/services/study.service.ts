@@ -55,6 +55,16 @@ export class StudyService {
    * 2. Get Flashcard Set with Cache-Aside Strategy
    * Redis Key: set:{setId}:cards (TTL: 1 hour)
    */
+  async listSets(userId?: string) {
+    return studyRepository.listSets(userId);
+  }
+
+  async updateSet(setId: string, userId: string, input: CreateSetInput) {
+    const updatedSet = await studyRepository.updateSet(setId, userId, input);
+    await cacheService.invalidateTag(["sets", `set:${setId}`]);
+    return updatedSet;
+  }
+
   async getSetById(setId: string) {
     const cacheKey = `set:${setId}:cards`;
 
@@ -113,6 +123,8 @@ export class StudyService {
   async submitAnswer(
     userId: string,
     sessionId: string,
+    setId: string,
+    mode: string,
     cardId: string,
     isCorrect: boolean
   ) {
@@ -127,14 +139,18 @@ export class StudyService {
       sessionState = {
         sessionId,
         userId,
-        setId: "unknown",
-        mode: "QUIZ",
+        setId,
+        mode,
         totalCards: 0,
         correctCount: 0,
         wrongCount: 0,
         cardProgressMap: {},
       };
     }
+
+    // Keep session metadata consistent even when the first answer arrives later.
+    sessionState.setId = setId;
+    sessionState.mode = mode;
 
     // Update global session counts
     if (isCorrect) {

@@ -71,6 +71,17 @@ services:
     depends_on:
       - mongo-db
 
+  # 5. Redis for auth tokens, cache, sessions and BullMQ
+  redis:
+    image: redis:7-alpine
+    container_name: english-learning-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+
 volumes:
   mongo-db-data:
   mongo-key-data:
+  redis-data:

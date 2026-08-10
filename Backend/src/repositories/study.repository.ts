@@ -64,6 +64,56 @@ class StudyRepository {
     });
   }
 
+  async listSets(userId?: string) {
+    return this.db.flashcardSet.findMany({
+      where: userId
+        ? { OR: [{ userId }, { isPublic: true }] }
+        : { isPublic: true },
+      include: {
+        cards: true,
+      },
+      orderBy: {
+        updatedAt: "desc",
+      },
+    });
+  }
+
+  async updateSet(setId: string, userId: string, input: CreateSetInput) {
+    const existing = await this.db.flashcardSet.findUnique({
+      where: { id: setId },
+      select: { userId: true },
+    });
+
+    if (!existing) {
+      throw new Error("Flashcard set not found");
+    }
+    if (existing.userId !== userId) {
+      throw new Error("Forbidden");
+    }
+
+    return (prisma as any).$transaction(async (tx: any) => {
+      await tx.card.deleteMany({ where: { setId } });
+      return tx.flashcardSet.update({
+        where: { id: setId },
+        data: {
+          title: input.title,
+          description: input.description,
+          isPublic: input.isPublic ?? true,
+          cards: {
+            create: input.cards.map((card) => ({
+              term: card.term,
+              definition: card.definition,
+              audioUrl: card.audioUrl,
+              exampleSentence: card.exampleSentence,
+              imageUrl: card.imageUrl,
+            })),
+          },
+        },
+        include: { cards: true },
+      });
+    });
+  }
+
   async getRandomDistractors(setId: string, excludeCardId: string, limit: number = 3) {
     // Top priority: distractors from the same set
     const sameSetCards: any[] = await this.db.card.findMany({

@@ -6,6 +6,8 @@ interface StudyState {
   currentSet: FlashcardSet | null;
   quizQuestions: QuizQuestion[];
   currentSessionId: string;
+  currentSessionSetId: string;
+  currentSessionMode: string;
   currentCardIndex: number;
   correctCount: number;
   wrongCount: number;
@@ -32,6 +34,8 @@ export const useStudyStore = create<StudyState>((set, get) => ({
   currentSet: null,
   quizQuestions: [],
   currentSessionId: generateUUID(),
+  currentSessionSetId: '',
+  currentSessionMode: 'QUIZ',
   currentCardIndex: 0,
   correctCount: 0,
   wrongCount: 0,
@@ -81,10 +85,8 @@ export const useStudyStore = create<StudyState>((set, get) => ({
       const response: any = await apiClient.post(`/sets/${setId}/quiz?limit=${limit}`);
       const questions: QuizQuestion[] = response?.questions ?? (Array.isArray(response) ? response : []);
       
-      const newSessionId = generateUUID();
       set({
         quizQuestions: questions,
-        currentSessionId: newSessionId,
         currentCardIndex: 0,
         correctCount: 0,
         wrongCount: 0,
@@ -97,9 +99,11 @@ export const useStudyStore = create<StudyState>((set, get) => ({
     }
   },
 
-  startNewSession: (_setId: string, _mode = 'FLASHCARD') => {
+  startNewSession: (setId: string, mode = 'FLASHCARD') => {
     set({
       currentSessionId: generateUUID(),
+      currentSessionSetId: setId,
+      currentSessionMode: mode,
       currentCardIndex: 0,
       correctCount: 0,
       wrongCount: 0,
@@ -107,10 +111,12 @@ export const useStudyStore = create<StudyState>((set, get) => ({
   },
 
   submitAnswer: async (cardId: string, isCorrect: boolean) => {
-    const { currentSessionId } = get();
+    const { currentSessionId, currentSessionSetId, currentSessionMode } = get();
     try {
       const result: SubmitAnswerResult = await apiClient.post('/study/submit-answer', {
         sessionId: currentSessionId,
+        setId: currentSessionSetId,
+        mode: currentSessionMode,
         cardId,
         isCorrect,
       });
@@ -158,5 +164,7 @@ export const useStudyStore = create<StudyState>((set, get) => ({
       correctCount: 0,
       wrongCount: 0,
       currentSessionId: generateUUID(),
+      currentSessionSetId: '',
+      currentSessionMode: 'QUIZ',
     }),
 }));

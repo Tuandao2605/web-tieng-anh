@@ -4,6 +4,19 @@ import { errorResponse, successResponse } from "../../../utils/response";
 
 export class StudyController {
   /**
+   * GET /api/v1/sets
+   */
+  async listSets(req: Request, res: Response) {
+    try {
+      const userId = (req.user as any)?.id as string | undefined;
+      const sets = await studyService.listSets(userId);
+      return successResponse(res, sets, "Flashcard sets retrieved successfully");
+    } catch (error: any) {
+      return errorResponse(res, error.message || "Failed to retrieve flashcard sets", error);
+    }
+  }
+
+  /**
    * POST /api/v1/sets
    */
   async createSet(req: Request, res: Response) {
@@ -21,6 +34,30 @@ export class StudyController {
       return successResponse(res, newSet, "Flashcard set created successfully", 201);
     } catch (error: any) {
       return errorResponse(res, error.message || "Failed to create flashcard set", error);
+    }
+  }
+
+  /**
+   * PUT /api/v1/sets/:id
+   */
+  async updateSet(req: Request, res: Response) {
+    try {
+      const userId = (req.user as any)?.id;
+      if (!userId) {
+        return errorResponse(res, "Unauthorized", {}, 401);
+      }
+
+      const setId = req.params.id as string;
+      const updatedSet = await studyService.updateSet(setId, userId, req.body);
+      return successResponse(res, updatedSet, "Flashcard set updated successfully");
+    } catch (error: any) {
+      if (error.message === "Forbidden") {
+        return errorResponse(res, "Forbidden", {}, 403);
+      }
+      if (error.message === "Flashcard set not found") {
+        return errorResponse(res, error.message, {}, 404);
+      }
+      return errorResponse(res, error.message || "Failed to update flashcard set", error);
     }
   }
 
@@ -72,11 +109,13 @@ export class StudyController {
         return errorResponse(res, "Unauthorized", {}, 401);
       }
 
-      const { sessionId, cardId, isCorrect } = req.body;
+      const { sessionId, setId, mode, cardId, isCorrect } = req.body;
 
       const result = await studyService.submitAnswer(
         userId,
         sessionId,
+        setId,
+        mode,
         cardId,
         isCorrect
       );

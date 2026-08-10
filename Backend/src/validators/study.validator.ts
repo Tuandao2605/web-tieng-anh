@@ -19,6 +19,12 @@ export const createSetSchema = z.object({
   }),
 });
 
+export const updateSetSchema = createSetSchema.extend({
+  params: z.object({
+    id: z.string().length(24, "Set ID must be a MongoDB ObjectId"),
+  }),
+});
+
 export const generateQuizSchema = z.object({
   params: z.object({
     id: z.string().min(1, "Set ID is required"),
@@ -31,7 +37,9 @@ export const generateQuizSchema = z.object({
 export const submitAnswerSchema = z.object({
   body: z.object({
     sessionId: z.string().min(1, "Session ID is required"),
-    cardId: z.string().min(1, "Card ID is required"),
+    setId: z.string().length(24, "Set ID must be a MongoDB ObjectId"),
+    mode: z.string().min(1, "Study mode is required").default("QUIZ"),
+    cardId: z.string().length(24, "Card ID must be a MongoDB ObjectId"),
     isCorrect: z.boolean(),
     userAnswer: z.string().optional(),
   }),
