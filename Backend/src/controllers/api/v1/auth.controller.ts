@@ -1,8 +1,28 @@
 import { Request, Response } from "express";
 import { apiAuthService } from "../../../services/apiAuth.service";
+import { authService } from "../../../services/auth.service";
 import { errorResponse, successResponse } from "../../../utils/response";
 
 export const apiAuthController = {
+  register: async (req: Request, res: Response) => {
+    try {
+      const user = await authService.register(req.body);
+      const safeUser = {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        status: user.status,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
+      };
+      return successResponse(res, safeUser, "Register Success", 201);
+    } catch (error: any) {
+      if (error?.code === "P2002") {
+        return errorResponse(res, "Email already exists", {}, 409);
+      }
+      return errorResponse(res, error?.message || "Register failed", {}, 500);
+    }
+  },
   login: async (req: Request, res: Response) => {
     const { email, password } = req.body;
     const token = await apiAuthService.login({

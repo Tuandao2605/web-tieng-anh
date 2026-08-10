@@ -48,6 +48,7 @@ export const QuizModePage: React.FC = () => {
   const handleRestartQuiz = () => {
     resetSession();
     if (id) {
+      startNewSession(id, 'QUIZ');
       generateQuiz(id, QUIZ_LIMIT);
     }
   };

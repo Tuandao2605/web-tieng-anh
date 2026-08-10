@@ -1,6 +1,6 @@
 import express from "express";
 import { validate } from "../../middlewares/validate.middleware";
-import { loginSchema } from "../../validators/auth.validator";
+import { loginSchema, registerSchema } from "../../validators/auth.validator";
 import { authMiddleware } from "../../middlewares/auth.middleware";
 import { apiAuthController } from "../../controllers/api/v1/auth.controller";
 import { apiUserController } from "../../controllers/api/v1/users.controller";
@@ -14,6 +14,7 @@ import { optionalAuthMiddleware } from "../../middlewares/optionalAuth.middlewar
 const router = express.Router();
 
 router.post("/auth/login", validate(loginSchema), apiAuthController.login);
+router.post("/auth/register", validate(registerSchema), apiAuthController.register);
 router.get("/auth/me", authMiddleware, apiAuthController.profile);
 router.delete("/auth/logout", authMiddleware, apiAuthController.logout);
 router.post("/auth/refresh-token", apiAuthController.refreshToken);
@@ -36,18 +37,33 @@ router.put("/posts", postsController.update);
 import studyController from "../../controllers/api/v1/study.controller";
 import {
   createSetSchema,
+  updateSetSchema,
+  addCardsToSetSchema,
   generateQuizSchema,
   submitAnswerSchema,
   syncProgressSchema,
 } from "../../validators/study.validator";
 
+router.get("/sets", optionalAuthMiddleware, studyController.listSets);
 router.post(
   "/sets",
   authMiddleware,
   validate(createSetSchema),
   studyController.createSet
 );
-router.get("/sets/:id", studyController.getSet);
+router.get("/sets/:id", optionalAuthMiddleware, studyController.getSet);
+router.put(
+  "/sets/:id",
+  authMiddleware,
+  validate(updateSetSchema),
+  studyController.updateSet
+);
+router.post(
+  "/sets/:id/cards/bulk",
+  authMiddleware,
+  validate(addCardsToSetSchema),
+  studyController.addCardsToSet
+);
 router.post(
   "/sets/:id/quiz",
   validate(generateQuizSchema),

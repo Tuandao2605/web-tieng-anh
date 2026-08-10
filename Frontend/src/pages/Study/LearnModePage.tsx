@@ -102,6 +102,7 @@ export const LearnModePage: React.FC = () => {
 
   const handleRestart = () => {
     resetSession();
+    if (id) startNewSession(id, 'FLASHCARD');
     setCurrentCardIndex(0);
     setPhase('studying');
   };

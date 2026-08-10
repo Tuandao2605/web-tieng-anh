@@ -1,11 +1,13 @@
 import { create } from 'zustand';
-import type { FlashcardSet, QuizQuestion, SubmitAnswerResult, CreateSetInput } from '../types';
+import type { FlashcardSet, QuizQuestion, SubmitAnswerResult, CreateSetInput, CreateCardInput } from '../types';
 import { apiClient } from '../api/apiClient';
 
 interface StudyState {
   currentSet: FlashcardSet | null;
   quizQuestions: QuizQuestion[];
   currentSessionId: string;
+  currentSessionSetId: string;
+  currentSessionMode: string;
   currentCardIndex: number;
   correctCount: number;
   wrongCount: number;
@@ -16,6 +18,7 @@ interface StudyState {
   fetchSet: (setId: string) => Promise<FlashcardSet>;
   createSet: (input: CreateSetInput) => Promise<FlashcardSet>;
   updateSet: (setId: string, input: CreateSetInput) => Promise<FlashcardSet>;
+  addCardsToSet: (setId: string, cards: CreateCardInput[]) => Promise<FlashcardSet>;
   generateQuiz: (setId: string, limit?: number) => Promise<QuizQuestion[]>;
   startNewSession: (setId: string, mode?: string) => void;
   submitAnswer: (cardId: string, isCorrect: boolean) => Promise<SubmitAnswerResult | null>;
@@ -32,6 +35,8 @@ export const useStudyStore = create<StudyState>((set, get) => ({
   currentSet: null,
   quizQuestions: [],
   currentSessionId: generateUUID(),
+  currentSessionSetId: '',
+  currentSessionMode: 'QUIZ',
   currentCardIndex: 0,
   correctCount: 0,
   wrongCount: 0,
@@ -75,16 +80,26 @@ export const useStudyStore = create<StudyState>((set, get) => ({
     }
   },
 
+  addCardsToSet: async (setId: string, cards: CreateCardInput[]) => {
+    set({ error: null });
+    try {
+      const updatedSet: FlashcardSet = await apiClient.post(`/sets/${setId}/cards/bulk`, { cards });
+      set({ currentSet: updatedSet });
+      return updatedSet;
+    } catch (err: any) {
+      set({ error: err.message || 'Thêm thẻ thất bại' });
+      throw err;
+    }
+  },
+
   generateQuiz: async (setId: string, limit: number = 10) => {
     set({ isLoading: true, error: null });
     try {
       const response: any = await apiClient.post(`/sets/${setId}/quiz?limit=${limit}`);
       const questions: QuizQuestion[] = response?.questions ?? (Array.isArray(response) ? response : []);
       
-      const newSessionId = generateUUID();
       set({
         quizQuestions: questions,
-        currentSessionId: newSessionId,
         currentCardIndex: 0,
         correctCount: 0,
         wrongCount: 0,
@@ -97,9 +112,11 @@ export const useStudyStore = create<StudyState>((set, get) => ({
     }
   },
 
-  startNewSession: (_setId: string, _mode = 'FLASHCARD') => {
+  startNewSession: (setId: string, mode = 'FLASHCARD') => {
     set({
       currentSessionId: generateUUID(),
+      currentSessionSetId: setId,
+      currentSessionMode: mode,
       currentCardIndex: 0,
       correctCount: 0,
       wrongCount: 0,
@@ -107,10 +124,12 @@ export const useStudyStore = create<StudyState>((set, get) => ({
   },
 
   submitAnswer: async (cardId: string, isCorrect: boolean) => {
-    const { currentSessionId } = get();
+    const { currentSessionId, currentSessionSetId, currentSessionMode } = get();
     try {
       const result: SubmitAnswerResult = await apiClient.post('/study/submit-answer', {
         sessionId: currentSessionId,
+        setId: currentSessionSetId,
+        mode: currentSessionMode,
         cardId,
         isCorrect,
       });
@@ -158,5 +177,7 @@ export const useStudyStore = create<StudyState>((set, get) => ({
       correctCount: 0,
       wrongCount: 0,
       currentSessionId: generateUUID(),
+      currentSessionSetId: '',
+      currentSessionMode: 'QUIZ',
     }),
 }));

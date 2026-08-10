@@ -214,7 +214,7 @@ const config = {
       "value": "prisma-client-js"
     },
     "output": {
-      "value": "/home/tuan/web/web-hoctienganh/Backend/src/generated/prisma",
+      "value": "/home/a/Documents/web-tieng-anh (2)/web-tieng-anh/Backend/src/generated/prisma",
       "fromEnvVar": null
     },
     "config": {
@@ -228,7 +228,7 @@ const config = {
       }
     ],
     "previewFeatures": [],
-    "sourceFilePath": "/home/tuan/web/web-hoctienganh/Backend/src/prisma/schema.prisma",
+    "sourceFilePath": "/home/a/Documents/web-tieng-anh (2)/web-tieng-anh/Backend/src/prisma/schema.prisma",
     "isCustomOutput": true
   },
   "relativeEnvPaths": {
@@ -242,7 +242,7 @@ const config = {
     "db"
   ],
   "activeProvider": "mongodb",
-  "postinstall": false,
+  "postinstall": true,
   "inlineDatasources": {
     "db": {
       "url": {
