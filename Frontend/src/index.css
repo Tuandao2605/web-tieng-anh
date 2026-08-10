@@ -1,0 +1,104 @@
+@import "tailwindcss";
+
+@layer utilities {
+  /* ── 3D Flip Card ── */
+  .perspective-1000 {
+    perspective: 1000px;
+  }
+  .transform-style-3d {
+    transform-style: preserve-3d;
+  }
+  .backface-hidden {
+    backface-visibility: hidden;
+  }
+  .rotate-y-180 {
+    transform: rotateY(180deg);
+  }
+
+  /* ── Card Swipe Transitions ── */
+  .card-exit-left {
+    animation: cardExitLeft 0.32s cubic-bezier(0.4, 0, 1, 1) forwards;
+  }
+  .card-exit-right {
+    animation: cardExitRight 0.32s cubic-bezier(0.4, 0, 1, 1) forwards;
+  }
+  .card-enter {
+    animation: cardEnter 0.32s cubic-bezier(0, 0, 0.2, 1) forwards;
+  }
+}
+
+/* ── Keyframes ── */
+@keyframes cardExitLeft {
+  from { opacity: 1; transform: translateX(0) scale(1) rotate(0deg); }
+  to   { opacity: 0; transform: translateX(-110%) scale(0.88) rotate(-3deg); }
+}
+@keyframes cardExitRight {
+  from { opacity: 1; transform: translateX(0) scale(1) rotate(0deg); }
+  to   { opacity: 0; transform: translateX(110%) scale(0.88) rotate(3deg); }
+}
+@keyframes cardEnter {
+  from { opacity: 0; transform: translateY(12px) scale(0.92); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes audioRipple {
+  0%   { transform: scale(1);   opacity: 0.7; }
+  100% { transform: scale(2.8); opacity: 0; }
+}
+.audio-ripple::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(99, 102, 241, 0.5);
+  animation: audioRipple 0.65s ease-out;
+}
+
+@keyframes statusBounce {
+  0%, 100% { transform: scale(1); }
+  40%       { transform: scale(1.07); }
+  70%       { transform: scale(0.97); }
+}
+.status-bounce {
+  animation: statusBounce 0.3s ease-out;
+}
+
+/* ── Keyboard hint pulse ── */
+@keyframes kbdPulse {
+  0%, 100% { opacity: 0.5; }
+  50%       { opacity: 1; }
+}
+.kbd-pulse {
+  animation: kbdPulse 2s ease-in-out infinite;
+}
+
+/* ── Base ── */
+body {
+  background-color: #0f172a;
+  color: #f8fafc;
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+    Ubuntu, Cantarell, sans-serif;
+  min-height: 100vh;
+}
+
+/* ── Glassmorphism ── */
+.glass-panel {
+  background: rgba(30, 41, 59, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.glass-card {
+  background: rgba(30, 41, 59, 0.5);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: all 0.25s ease-in-out;
+}
+
+.glass-card:hover {
+  background: rgba(51, 65, 85, 0.6);
+  border-color: rgba(99, 102, 241, 0.4);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 25px -5px rgba(99, 102, 241, 0.15);
+}
