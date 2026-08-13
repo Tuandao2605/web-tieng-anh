@@ -214,7 +214,7 @@ const config = {
       "value": "prisma-client-js"
     },
     "output": {
-      "value": "/home/a/Documents/web-tieng-anh (1)/web-tieng-anh/Backend/src/generated/prisma",
+      "value": "/home/tuan/web/web-hoctienganh/Backend/src/generated/prisma",
       "fromEnvVar": null
     },
     "config": {
@@ -228,7 +228,7 @@ const config = {
       }
     ],
     "previewFeatures": [],
-    "sourceFilePath": "/home/a/Documents/web-tieng-anh (1)/web-tieng-anh/Backend/src/prisma/schema.prisma",
+    "sourceFilePath": "/home/tuan/web/web-hoctienganh/Backend/src/prisma/schema.prisma",
     "isCustomOutput": true
   },
   "relativeEnvPaths": {

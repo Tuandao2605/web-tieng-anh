@@ -3,10 +3,11 @@ import { useForm, useFieldArray } from 'react-hook-form';
 import type { SubmitHandler } from 'react-hook-form';
 import {
   PlusCircle, Trash2, Save, Loader2, Globe, Lock,
-  ArrowUp, ArrowDown, AlertCircle, Sparkles, BookOpen
+  ArrowUp, ArrowDown, AlertCircle, Sparkles, BookOpen, ClipboardPaste
 } from 'lucide-react';
-import type { CreateSetInput, FlashcardSet } from '../../types';
+import type { CreateCardInput, CreateSetInput, FlashcardSet } from '../../types';
 import { useStudyStore } from '../../store/useStudyStore';
+import { BulkAddCardsModal } from './BulkAddCardsModal';
 
 export interface SetFormEditorProps {
   initialData?: FlashcardSet | null;
@@ -32,6 +33,7 @@ export const SetFormEditor: React.FC<SetFormEditorProps> = ({
 }) => {
   const { createSet, updateSet, isLoading, error } = useStudyStore();
   const [formError, setFormError] = useState<string | null>(null);
+  const [isBulkOpen, setIsBulkOpen] = useState(false);
   const isEditing = Boolean(setId || initialData?.id);
 
   const {
@@ -55,7 +57,7 @@ export const SetFormEditor: React.FC<SetFormEditorProps> = ({
     },
   });
 
-  const { fields, append, remove, move } = useFieldArray({
+  const { fields, append, remove, move, replace } = useFieldArray({
     control,
     name: 'cards',
   });
@@ -88,6 +90,29 @@ export const SetFormEditor: React.FC<SetFormEditorProps> = ({
     if (e.key === 'Tab' && !e.shiftKey && index === fields.length - 1) {
       // Append a new card row when tabbing out of the last definition field
       append({ ...emptyCard });
+    }
+  };
+
+  // Import many cards into the create/edit form without making a separate API request.
+  // If the form only contains empty starter rows, replace them. Otherwise append.
+  const handleBulkImport = async (cards: CreateCardInput[]) => {
+    const importedCards = cards.map((card) => ({
+      term: card.term,
+      definition: card.definition,
+      exampleSentence: card.exampleSentence || '',
+      imageUrl: card.imageUrl || '',
+    }));
+
+    const hasExistingContent = (cardsWatch || []).some((card) =>
+      [card?.term, card?.definition, card?.exampleSentence, card?.imageUrl].some(
+        (value) => typeof value === 'string' && value.trim().length > 0
+      )
+    );
+
+    if (hasExistingContent) {
+      append(importedCards);
+    } else {
+      replace(importedCards);
     }
   };
 
@@ -220,7 +245,7 @@ export const SetFormEditor: React.FC<SetFormEditorProps> = ({
 
       {/* SECTION 2: DYNAMIC CARD ROWS */}
       <div className="space-y-4">
-        <div className="flex items-center justify-between px-1">
+        <div className="flex flex-col gap-3 px-1 sm:flex-row sm:items-center sm:justify-between">
           <h3 className="text-lg font-extrabold text-slate-200 flex items-center gap-2">
             <span>Danh sách thẻ ghi nhớ</span>
             <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-slate-800 text-indigo-400 border border-slate-700">
@@ -228,9 +253,19 @@ export const SetFormEditor: React.FC<SetFormEditorProps> = ({
             </span>
           </h3>
 
-          <span className="text-xs text-slate-500 hidden sm:inline">
-            💡 Mẹo: Nhấn <kbd className="px-1.5 py-0.5 bg-slate-800 border border-slate-700 rounded text-indigo-300">Tab</kbd> ở ô định nghĩa thẻ cuối để thêm dòng mới
-          </span>
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-xs text-slate-500 hidden lg:inline">
+              💡 Mẹo: Nhấn <kbd className="px-1.5 py-0.5 bg-slate-800 border border-slate-700 rounded text-indigo-300">Tab</kbd> ở ô định nghĩa thẻ cuối để thêm dòng mới
+            </span>
+            <button
+              type="button"
+              onClick={() => setIsBulkOpen(true)}
+              className="inline-flex items-center gap-2 rounded-xl border border-indigo-500/40 bg-indigo-500/10 px-3.5 py-2 text-xs font-bold text-indigo-300 transition-all hover:border-indigo-400 hover:bg-indigo-500/20 hover:text-indigo-200"
+            >
+              <ClipboardPaste className="h-4 w-4" />
+              Nhập hàng loạt
+            </button>
+          </div>
         </div>
 
         <div className="space-y-4">
@@ -356,6 +391,12 @@ export const SetFormEditor: React.FC<SetFormEditorProps> = ({
           <span>Thêm thẻ mới</span>
         </button>
       </div>
+
+      <BulkAddCardsModal
+        isOpen={isBulkOpen}
+        onClose={() => setIsBulkOpen(false)}
+        onSubmit={handleBulkImport}
+      />
 
       {/* FOOTER ACTIONS */}
       <div className="flex items-center justify-end gap-4 pt-4 border-t border-slate-800">

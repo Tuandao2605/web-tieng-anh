@@ -18,6 +18,7 @@ interface StudyState {
   fetchSet: (setId: string) => Promise<FlashcardSet>;
   createSet: (input: CreateSetInput) => Promise<FlashcardSet>;
   updateSet: (setId: string, input: CreateSetInput) => Promise<FlashcardSet>;
+  addCardsToSet: (setId: string, cards: CreateCardInput[]) => Promise<FlashcardSet>;
   generateQuiz: (setId: string, limit?: number) => Promise<QuizQuestion[]>;
   startNewSession: (setId: string, mode?: string) => void;
   submitAnswer: (cardId: string, isCorrect: boolean) => Promise<SubmitAnswerResult | null>;
@@ -80,14 +81,14 @@ export const useStudyStore = create<StudyState>((set, get) => ({
     }
   },
 
-  bulkAddCards: async (setId: string, cards: CreateCardInput[]) => {
-    set({ isLoading: true, error: null });
+  addCardsToSet: async (setId: string, cards: CreateCardInput[]) => {
+    set({ error: null });
     try {
       const updatedSet: FlashcardSet = await apiClient.post(`/sets/${setId}/cards/bulk`, { cards });
-      set({ currentSet: updatedSet, isLoading: false });
+      set({ currentSet: updatedSet });
       return updatedSet;
     } catch (err: any) {
-      set({ error: err.message || 'Thêm từ hàng loạt thất bại', isLoading: false });
+      set({ error: err.message || 'Thêm thẻ thất bại' });
       throw err;
     }
   },
@@ -97,7 +98,7 @@ export const useStudyStore = create<StudyState>((set, get) => ({
     try {
       const response: any = await apiClient.post(`/sets/${setId}/quiz?limit=${limit}`);
       const questions: QuizQuestion[] = response?.questions ?? (Array.isArray(response) ? response : []);
-
+      
       set({
         quizQuestions: questions,
         currentCardIndex: 0,

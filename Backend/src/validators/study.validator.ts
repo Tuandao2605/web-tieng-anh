@@ -25,6 +25,26 @@ export const updateSetSchema = createSetSchema.extend({
   }),
 });
 
+export const addCardsToSetSchema = z.object({
+  params: z.object({
+    id: z.string().length(24, "Set ID must be a MongoDB ObjectId"),
+  }),
+  body: z.object({
+    cards: z
+      .array(
+        z.object({
+          term: z.string().trim().min(1, "Term is required").max(255),
+          definition: z.string().trim().min(1, "Definition is required").max(2000),
+          audioUrl: z.string().url().optional().or(z.literal("")),
+          exampleSentence: z.string().optional(),
+          imageUrl: z.string().url().optional().or(z.literal("")),
+        })
+      )
+      .min(1, "Must contain at least 1 card")
+      .max(200, "Can only add up to 200 cards at a time"),
+  }),
+});
+
 export const generateQuizSchema = z.object({
   params: z.object({
     id: z.string().min(1, "Set ID is required"),

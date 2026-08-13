@@ -38,30 +38,6 @@ export class StudyController {
   }
 
   /**
-   * PUT /api/v1/sets/:id
-   */
-  async updateSet(req: Request, res: Response) {
-    try {
-      const userId = (req.user as any)?.id;
-      if (!userId) {
-        return errorResponse(res, "Unauthorized", {}, 401);
-      }
-
-      const setId = req.params.id as string;
-      const updatedSet = await studyService.updateSet(setId, userId, req.body);
-      return successResponse(res, updatedSet, "Flashcard set updated successfully");
-    } catch (error: any) {
-      if (error.message === "Forbidden") {
-        return errorResponse(res, "Forbidden", {}, 403);
-      }
-      if (error.message === "Flashcard set not found") {
-        return errorResponse(res, error.message, {}, 404);
-      }
-      return errorResponse(res, error.message || "Failed to update flashcard set", error);
-    }
-  }
-
-  /**
    * GET /api/v1/sets/:id
    */
   async getSet(req: Request, res: Response) {

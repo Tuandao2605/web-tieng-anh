@@ -2,17 +2,20 @@ import React, { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, GraduationCap, Zap, Pencil, Globe, Lock,
-  Layers, ChevronLeft, ChevronRight, Eye, EyeOff, Volume2
+  Layers, ChevronLeft, ChevronRight, Eye, EyeOff, Volume2, PlusCircle
 } from 'lucide-react';
 import { useStudyStore } from '../../store/useStudyStore';
-import type { Card } from '../../types';
+import type { Card, CreateCardInput } from '../../types';
+import { BulkAddCardsModal } from '../../components/study/BulkAddCardsModal';
 
 export const SetDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { currentSet, fetchSet, isLoading, error } = useStudyStore();
+  const { currentSet, fetchSet, addCardsToSet, isLoading, error } = useStudyStore();
   const [previewIndex, setPreviewIndex] = useState(0);
   const [showDefinition, setShowDefinition] = useState(false);
+  const [showBulkAdd, setShowBulkAdd] = useState(false);
+  const [isAddingCards, setIsAddingCards] = useState(false);
 
   useEffect(() => {
     if (id) fetchSet(id);
@@ -50,6 +53,18 @@ export const SetDetailPage: React.FC = () => {
     setShowDefinition(false);
   };
 
+  const handleBulkAdd = async (newCards: CreateCardInput[]) => {
+    if (!id) return;
+    setIsAddingCards(true);
+    try {
+      await addCardsToSet(id, newCards);
+      setPreviewIndex(0);
+      setShowDefinition(false);
+    } finally {
+      setIsAddingCards(false);
+    }
+  };
+
   return (
     <div className="space-y-8">
       {/* Header */}
@@ -75,13 +90,23 @@ export const SetDetailPage: React.FC = () => {
             </div>
           </div>
 
-          <Link
-            to={`/set/${id}/edit`}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition-all shrink-0"
-          >
-            <Pencil className="w-4 h-4" />
-            Chỉnh sửa
-          </Link>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowBulkAdd(true)}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-all"
+            >
+              <PlusCircle className="w-4 h-4" />
+              Thêm nhiều từ
+            </button>
+            <Link
+              to={`/set/${id}/edit`}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition-all"
+            >
+              <Pencil className="w-4 h-4" />
+              Chỉnh sửa
+            </Link>
+          </div>
         </div>
       </div>
 
@@ -194,6 +219,12 @@ export const SetDetailPage: React.FC = () => {
           ))}
         </div>
       </div>
+      <BulkAddCardsModal
+        isOpen={showBulkAdd}
+        isSubmitting={isAddingCards}
+        onClose={() => setShowBulkAdd(false)}
+        onSubmit={handleBulkAdd}
+      />
     </div>
   );
 };

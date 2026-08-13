@@ -48,23 +48,10 @@ export class StudyService {
     return newSet;
   }
 
-  async listSets(userId?: string) {
-    return studyRepository.listSets(userId);
-  }
-
-  async addCardsToSet(setId: string, userId: string, cards: CreateCardInput[]) {
-    const updatedSet = await studyRepository.addCardsToSet(setId, userId, cards);
-    await cacheService.invalidateTag(["sets", `set:${setId}`]);
-
-    return updatedSet;
-  }
-
-  async updateSet(setId: string, userId: string, input: CreateSetInput) {
-    const updatedSet = await studyRepository.updateSet(setId, userId, input);
-    await cacheService.invalidateTag(["sets", `set:${setId}`]);
-    return updatedSet;
-  }
-
+  /**
+   * 2. Get Flashcard Set with Cache-Aside Strategy
+   * Redis Key: set:{setId}:cards (TTL: 1 hour)
+   */
   async getSetById(setId: string) {
     const cacheKey = `set:${setId}:cards`;
 
