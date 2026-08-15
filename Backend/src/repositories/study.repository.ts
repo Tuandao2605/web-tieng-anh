@@ -1,5 +1,7 @@
 import { prisma } from "../libs/prisma";
 
+// ─── Input Types ──────────────────────────────────────────────────────────────
+
 export interface CreateCardInput {
   term: string;
   definition: string;
@@ -16,6 +18,12 @@ export interface CreateSetInput {
   cards: CreateCardInput[];
 }
 
+export interface UpdateSetInput {
+  title?: string;
+  description?: string;
+  isPublic?: boolean;
+}
+
 export interface UpdateCardProgressInput {
   userId: string;
   cardId: string;
@@ -27,13 +35,22 @@ export interface UpdateCardProgressInput {
   lastReviewedAt: Date;
 }
 
+// ─── Repository ───────────────────────────────────────────────────────────────
+
+// Shorthand để cast prisma sang any (model chưa generate type đầy đủ)
+const db = prisma as any;
+
 class StudyRepository {
-  private get db(): any {
-    return prisma as any;
+  async listSets(userId?: string) {
+    return db.flashcardSet.findMany({
+      where: userId ? { OR: [{ isPublic: true }, { userId }] } : { isPublic: true },
+      include: { cards: true },
+      orderBy: { createdAt: "desc" },
+    });
   }
 
   async createSet(input: CreateSetInput) {
-    return this.db.flashcardSet.create({
+    return db.flashcardSet.create({
       data: {
         userId: input.userId,
         title: input.title,
@@ -49,28 +66,53 @@ class StudyRepository {
           })),
         },
       },
-      include: {
-        cards: true,
+      include: { cards: true },
+    });
+  }
+
+  async updateSet(setId: string, input: UpdateSetInput) {
+    return db.flashcardSet.update({
+      where: { id: setId },
+      data: {
+        title: input.title,
+        description: input.description,
+        isPublic: input.isPublic,
       },
+      include: { cards: true },
+    });
+  }
+
+  async addCardsToSet(setId: string, cards: CreateCardInput[]) {
+    return db.flashcardSet.update({
+      where: { id: setId },
+      data: {
+        cards: {
+          create: cards.map((card) => ({
+            term: card.term,
+            definition: card.definition,
+            audioUrl: card.audioUrl,
+            exampleSentence: card.exampleSentence,
+            imageUrl: card.imageUrl,
+          })),
+        },
+      },
+      include: { cards: true },
     });
   }
 
   async findSetById(setId: string) {
-    return this.db.flashcardSet.findUnique({
+    return db.flashcardSet.findUnique({
       where: { id: setId },
-      include: {
-        cards: true,
-      },
+      include: { cards: true },
     });
   }
 
+  /** Lấy các card ngẫu nhiên để làm distractor cho quiz */
   async getRandomDistractors(setId: string, excludeCardId: string, limit: number = 3) {
-    // Top priority: distractors from the same set
-    const sameSetCards: any[] = await this.db.card.findMany({
-      where: {
-        setId,
-        id: { not: excludeCardId },
-      },
+    // Ưu tiên lấy trong cùng set
+    const sameSetCards: { id: string; definition: string }[] = await db.card.findMany({
+      where: { setId, id: { not: excludeCardId } },
+      select: { id: true, definition: true },
       take: limit * 2,
     });
 
@@ -78,11 +120,10 @@ class StudyRepository {
       return sameSetCards.sort(() => 0.5 - Math.random()).slice(0, limit);
     }
 
-    // Fallback: pull cards from global public sets
-    const fallbackCards: any[] = await this.db.card.findMany({
-      where: {
-        id: { notIn: [excludeCardId, ...sameSetCards.map((c: any) => c.id)] },
-      },
+    // Fallback: lấy từ global pool
+    const fallbackCards: { id: string; definition: string }[] = await db.card.findMany({
+      where: { id: { notIn: [excludeCardId, ...sameSetCards.map((c) => c.id)] } },
+      select: { id: true, definition: true },
       take: limit - sameSetCards.length,
     });
 
@@ -90,11 +131,8 @@ class StudyRepository {
   }
 
   async getUserProgressForCards(userId: string, cardIds: string[]) {
-    return this.db.userCardProgress.findMany({
-      where: {
-        userId,
-        cardId: { in: cardIds },
-      },
+    return db.userCardProgress.findMany({
+      where: { userId, cardId: { in: cardIds } },
     });
   }
 
@@ -107,47 +145,37 @@ class StudyRepository {
     progressUpdates: UpdateCardProgressInput[]
   ) {
     return (prisma as any).$transaction(async (tx: any) => {
-      // 1. Record Study Session
+      // 1. Ghi lại Study Session
       const session = await tx.studySession.create({
-        data: {
-          userId,
-          setId,
-          mode,
-          score,
-          totalCards,
-          completedAt: new Date(),
-        },
+        data: { userId, setId, mode, score, totalCards, completedAt: new Date() },
       });
 
-      // 2. Bulk upsert card progress
-      for (const item of progressUpdates) {
-        await tx.userCardProgress.upsert({
-          where: {
-            userId_cardId: {
+      // 2. Bulk upsert tiến trình từng card
+      await Promise.all(
+        progressUpdates.map((item) =>
+          tx.userCardProgress.upsert({
+            where: { userId_cardId: { userId: item.userId, cardId: item.cardId } },
+            update: {
+              status: item.status,
+              streak: item.streak,
+              correctCount: item.correctCount,
+              wrongCount: item.wrongCount,
+              nextReviewAt: item.nextReviewAt,
+              lastReviewedAt: item.lastReviewedAt,
+            },
+            create: {
               userId: item.userId,
               cardId: item.cardId,
+              status: item.status,
+              streak: item.streak,
+              correctCount: item.correctCount,
+              wrongCount: item.wrongCount,
+              nextReviewAt: item.nextReviewAt,
+              lastReviewedAt: item.lastReviewedAt,
             },
-          },
-          update: {
-            status: item.status,
-            streak: item.streak,
-            correctCount: item.correctCount,
-            wrongCount: item.wrongCount,
-            nextReviewAt: item.nextReviewAt,
-            lastReviewedAt: item.lastReviewedAt,
-          },
-          create: {
-            userId: item.userId,
-            cardId: item.cardId,
-            status: item.status,
-            streak: item.streak,
-            correctCount: item.correctCount,
-            wrongCount: item.wrongCount,
-            nextReviewAt: item.nextReviewAt,
-            lastReviewedAt: item.lastReviewedAt,
-          },
-        });
-      }
+          })
+        )
+      );
 
       return session;
     });
