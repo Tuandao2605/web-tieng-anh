@@ -44,23 +44,26 @@ app.set("layout extractStyles", true);
 app.set("view engine", "ejs");
 app.set("views", path.join(__dirname, "views"));
 
-const frontendOrigin = ["http://localhost:5500", "http://127.0.0.1:5500"];
-//Cors
-const corsOptions = {
-  origin: (
-    origin: string,
-    callback: (err: Error | null, origin?: boolean) => void,
-  ) => {
-    if (frontendOrigin.includes(origin) || !origin) {
+const frontendOrigin = [
+  "http://localhost:5500",
+  "http://127.0.0.1:5500",
+  "http://localhost:3000", // Vite proxy same-origin
+];
+
+// Cors
+const corsOptions: CorsOptions = {
+  origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+    // Cho phép: request không có origin (curl, server-to-server) hoặc nằm trong whitelist
+    if (!origin || frontendOrigin.includes(origin)) {
       callback(null, true);
     } else {
-      callback(new Error("Disallow by cors"));
+      callback(new Error(`Disallow by cors: ${origin}`));
     }
   },
-  optionSuccessStatus: 200,
+  optionsSuccessStatus: 200,
   credentials: true,
   allowedHeaders: ["Authorization", "Content-Type"],
-} as CorsOptions;
+};
 //Route
 app.use(routerWeb);
 app.use("/api", cors(corsOptions), routerApi);

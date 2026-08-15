@@ -1,242 +1,232 @@
 import { redisClient } from "../utils/redis";
 import { cacheService } from "./cache.service";
-import studyRepository, { CreateCardInput, CreateSetInput } from "../repositories/study.repository";
+import { UpdatedError } from "../errors/app.error";
+import studyRepository, {
+  CreateSetInput,
+  UpdateSetInput,
+} from "../repositories/study.repository";
+import cardRepository, {
+  CreateCardInput,
+} from "../repositories/card.repository";
+import userProgressRepository from "../repositories/user-progress.repository";
+import {
+  CardProgressEntry,
+  CardStatus,
+  QuizQuestion,
+  SessionProgressState,
+  SubmitAnswerInput,
+} from "../types/study";
 
-const redis = redisClient.getInstance();
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-export interface QuizQuestion {
-  cardId: string;
-  term: string;
-  audioUrl?: string | null;
-  exampleSentence?: string | null;
-  imageUrl?: string | null;
-  options: {
-    definition: string;
-    isCorrect: boolean;
-  }[];
+/**
+ * Leitner-based spaced repetition:
+ * - streak >= 2 → MASTERED  (review sau streak × 3 ngày)
+ * - streak == 1 → LEARNING  (review sau 1 ngày)
+ * - streak == 0 → LEARNING  (review hôm nay)
+ */
+function computeNextReview(streak: number): {
+  status: CardStatus;
+  nextReviewAt: Date;
+} {
+  if (streak >= 2) {
+    return {
+      status: "MASTERED",
+      nextReviewAt: new Date(Date.now() + streak * 3 * 24 * 60 * 60 * 1000),
+    };
+  }
+  return {
+    status: "LEARNING",
+    nextReviewAt: new Date(Date.now() + streak * 24 * 60 * 60 * 1000),
+  };
 }
 
-export interface SessionProgressState {
-  sessionId: string;
-  userId: string;
-  setId: string;
-  mode: string;
-  totalCards: number;
-  correctCount: number;
-  wrongCount: number;
-  cardProgressMap: Record<
-    string,
-    {
-      cardId: string;
-      streak: number;
-      correctCount: number;
-      wrongCount: number;
-      status: "NEW" | "LEARNING" | "MASTERED";
-      nextReviewAt: string;
-      lastReviewedAt: string;
-    }
-  >;
-}
+// ─── Service ──────────────────────────────────────────────────────────────────
 
 export class StudyService {
-
-  async createSet(input: CreateSetInput) {
-    const newSet = await studyRepository.createSet(input);
-
-    await cacheService.invalidateTag(["sets", "public"]);
-
-    return newSet;
+  private get redis() {
+    return redisClient.getInstance();
   }
 
-  /**
-   * 2. Get Flashcard Set with Cache-Aside Strategy
-   * Redis Key: set:{setId}:cards (TTL: 1 hour)
-   */
+  // ── 1. List Sets ────────────────────────────────────────────────────────────
 
   async listSets(userId?: string) {
-    return studyRepository.listSets(userId);
-  }
-
-  async getSetById(setId: string) {
-    const cacheKey = `set:${setId}:cards`;
+    const cacheKey = userId ? `sets:user:${userId}` : "sets:public";
+    const tags = userId ? ["sets", `user:${userId}:sets`] : ["sets", "public"];
 
     return cacheService.getOrSetWithTag(
       cacheKey,
-      async () => {
-        const set = await studyRepository.findSetById(setId);
-        if (!set) throw new Error("Flashcard set not found");
-        return set;
-      },
-      ["sets", `set:${setId}`],
-      3600 // 1 hour TTL
+      () => studyRepository.listSets(userId),
+      tags,
+      300, // 5 min TTL (list changes frequently)
     );
   }
 
-  async updateSet(setId: string, userId: string, input: CreateSetInput) {
-    const updatedSet = await studyRepository.updateSet(setId, userId, input);
-    await cacheService.invalidateTag(["sets", `set:${setId}`]);
-    return updatedSet;
-  }
-  async addCardsToSet(setId: string, userId: string, cards: CreateCardInput[]) {
-    const updatedSet = await studyRepository.addCardsToSet(setId, userId, cards);
-    await cacheService.invalidateTag(["sets", `set:${setId}`]);
+  // ── 2. Create Set ───────────────────────────────────────────────────────────
 
-    return updatedSet;
+  async createSet(input: CreateSetInput) {
+    const newSet = await studyRepository.createSet(input);
+    await cacheService.invalidateTag(["sets", "public"]);
+    return newSet;
   }
-  /**
-   * 3. Generate Multiple Choice Quiz (4 Options per card)
-   */
-  async generateQuiz(setId: string, limit: number = 10): Promise<QuizQuestion[]> {
+
+  // ── 3. Update Set ───────────────────────────────────────────────────────────
+
+  async updateSet(setId: string, input: UpdateSetInput) {
+    const updated = await studyRepository
+      .updateSet(setId, input)
+      .catch((err: any) => {
+        if (err?.code === "P2025")
+          throw new UpdatedError("Flashcard set not found", 404, err);
+        throw new UpdatedError("Failed to update flashcard set", 500, err);
+      });
+
+    await cacheService.invalidateTag(["sets", `set:${setId}`]);
+    return updated;
+  }
+
+  // ── 4. Add Cards to Set ─────────────────────────────────────────────────────
+
+  async addCardsToSet(setId: string, cards: CreateCardInput[]) {
+    const updated = await studyRepository
+      .addCardsToSet(setId, cards)
+      .catch((err: any) => {
+        if (err?.code === "P2025")
+          throw new UpdatedError("Flashcard set not found", 404, err);
+        throw new UpdatedError("Failed to add cards", 500, err);
+      });
+
+    await cacheService.invalidateTag([`set:${setId}`]);
+    return updated;
+  }
+
+  // ── 5. Get Set by ID (Cache-Aside, TTL 1h) ──────────────────────────────────
+
+  async getSetById(setId: string) {
+    return cacheService.getOrSetWithTag(
+      `set:${setId}:cards`,
+      async () => {
+        const set = await studyRepository.findSetById(setId);
+        if (!set) throw new UpdatedError("Flashcard set not found", 404);
+        return set;
+      },
+      ["sets", `set:${setId}`],
+      3600,
+    );
+  }
+
+  // ── 6. Generate Multiple-Choice Quiz ────────────────────────────────────────
+
+  async generateQuiz(
+    setId: string,
+    limit: number = 10,
+  ): Promise<QuizQuestion[]> {
     const set: any = await this.getSetById(setId);
-    if (!set || !set.cards || set.cards.length === 0) {
-      throw new Error("Set has no cards to generate quiz");
+    if (!set?.cards?.length) {
+      throw new UpdatedError("Set has no cards to generate quiz", 422);
     }
 
     const allCards: any[] = set.cards;
-
 
     const cardsToQuiz = [...allCards]
       .sort(() => 0.5 - Math.random())
       .slice(0, limit);
 
-    const questions: QuizQuestion[] = [];
-
-    // 3. Tạo quiz hoàn toàn trên Memory (RAM) - Không query DB lặp lại
-    for (const card of cardsToQuiz) {
-      // Lấy các card khác trong cùng bộ set
-      const sameSetCards = allCards.filter((c: any) => c.id !== card.id);
-
-      let distractors: any[] = [];
-
-      // Trường hợp 1: Set đủ từ (>= 4 từ) -> Bốc ngẫu nhiên 3 từ trong set
-      if (sameSetCards.length >= 3) {
-        distractors = [...sameSetCards]
-          .sort(() => 0.5 - Math.random())
-          .slice(0, 3);
-      }
-      // Trường hợp 2: Set quá ít từ (< 4 từ) -> Query DB 1 lần duy nhất lấy thêm từ public sets
-      else {
-        const excludeIds = [card.id, ...sameSetCards.map((c: any) => c.id)];
-        const fallbackCards = await studyRepository.findGlobalCardsExcept(
-          excludeIds,
-          3 - sameSetCards.length
+    const questions = await Promise.all(
+      cardsToQuiz.map(async (card: any) => {
+        // 👇 Đảm bảo ở đây dùng cardRepository
+        const distractors = await cardRepository.getRandomDistractors(
+          setId,
+          card.id,
+          3,
         );
-        distractors = [...sameSetCards, ...fallbackCards];
-      }
 
-      // Ghép đáp án đúng + đáp án nhiễu và xáo trộn vị trí A, B, C, D
-      const options = [
-        { definition: card.definition, isCorrect: true },
-        ...distractors.map((d: any) => ({
-          definition: d.definition,
-          isCorrect: false,
-        })),
-      ].sort(() => 0.5 - Math.random());
+        const options = [
+          { definition: card.definition, isCorrect: true },
+          ...distractors.map((d) => ({
+            definition: d.definition,
+            isCorrect: false,
+          })),
+        ].sort(() => 0.5 - Math.random());
 
-      questions.push({
-        cardId: card.id,
-        term: card.term,
-        audioUrl: card.audioUrl,
-        exampleSentence: card.exampleSentence,
-        imageUrl: card.imageUrl,
-        options,
-      });
-    }
+        return {
+          cardId: card.id,
+          term: card.term,
+          audioUrl: card.audioUrl ?? null,
+          exampleSentence: card.exampleSentence ?? null,
+          imageUrl: card.imageUrl ?? null,
+          options,
+        } satisfies QuizQuestion;
+      }),
+    );
 
     return questions;
   }
 
-  /**
-   * 4. Submit Answer & Track Temporary Session State in Redis
-   * Redis Key: user:{userId}:session:{sessionId} (TTL: 24h)
-   */
-  async submitAnswer(
-    userId: string,
-    sessionId: string,
-    setId: string,
-    mode: string,
-    cardId: string,
-    isCorrect: boolean
-  ) {
+  // ── 7. Submit Answer (state kept in Redis, TTL 24h) ─────────────────────────
+
+  async submitAnswer(input: SubmitAnswerInput) {
+    const { userId, sessionId, setId, mode, cardId, isCorrect } = input;
     const sessionKey = `user:${userId}:session:${sessionId}`;
-    const rawSession = await redis.get(sessionKey);
+    const rawSession = await this.redis.get(sessionKey);
 
-    let sessionState: SessionProgressState;
+    const sessionState: SessionProgressState = rawSession
+      ? JSON.parse(rawSession)
+      : {
+          sessionId,
+          userId,
+          setId,
+          mode,
+          totalCards: 0,
+          correctCount: 0,
+          wrongCount: 0,
+          cardProgressMap: {},
+        };
 
-    if (rawSession) {
-      sessionState = JSON.parse(rawSession);
-    } else {
-      sessionState = {
-        sessionId,
-        userId,
-        setId,
-        mode,
-        totalCards: 0,
-        correctCount: 0,
-        wrongCount: 0,
-        cardProgressMap: {},
-      };
-    }
-
-    // Keep session metadata consistent even when the first answer arrives later.
+    // Giữ metadata nhất quán khi answer đầu tiên đến muộn
     sessionState.setId = setId;
     sessionState.mode = mode;
 
-    // Update global session counts
-    if (isCorrect) {
-      sessionState.correctCount += 1;
-    } else {
-      sessionState.wrongCount += 1;
-    }
+    // Cập nhật đếm toàn phiên
+    if (isCorrect) sessionState.correctCount += 1;
+    else sessionState.wrongCount += 1;
 
-    // Get current progress for this specific card in session
-    const currentCardProg = sessionState.cardProgressMap[cardId] || {
+    // Cập nhật tiến trình của card cụ thể
+    const now = new Date();
+    const prev: CardProgressEntry = sessionState.cardProgressMap[cardId] ?? {
       cardId,
       streak: 0,
       correctCount: 0,
       wrongCount: 0,
       status: "NEW",
-      nextReviewAt: new Date().toISOString(),
-      lastReviewedAt: new Date().toISOString(),
+      nextReviewAt: now.toISOString(),
+      lastReviewedAt: now.toISOString(),
     };
 
     if (isCorrect) {
-      currentCardProg.correctCount += 1;
-      currentCardProg.streak += 1;
+      prev.correctCount += 1;
+      prev.streak += 1;
     } else {
-      currentCardProg.wrongCount += 1;
-      currentCardProg.streak = 0; // reset streak on wrong answer
+      prev.wrongCount += 1;
+      prev.streak = 0;
     }
 
-    // Spaced Repetition Logic (Leitner system simple rule)
-    // Streak >= 2 -> MASTERED (Review in 3 days)
-    // Streak == 1 -> LEARNING (Review in 1 day)
-    // Streak == 0 -> LEARNING (Review today)
-    const now = new Date();
-    let reviewDays = 0;
+    const { status, nextReviewAt } = computeNextReview(prev.streak);
+    prev.status = status;
+    prev.nextReviewAt = nextReviewAt.toISOString();
+    prev.lastReviewedAt = now.toISOString();
 
-    if (currentCardProg.streak >= 2) {
-      currentCardProg.status = "MASTERED";
-      reviewDays = 3 * currentCardProg.streak;
-    } else {
-      currentCardProg.status = "LEARNING";
-      reviewDays = currentCardProg.streak === 1 ? 1 : 0;
-    }
+    sessionState.cardProgressMap[cardId] = prev;
 
-    const nextReviewDate = new Date(now.getTime() + reviewDays * 24 * 60 * 60 * 1000);
-    currentCardProg.nextReviewAt = nextReviewDate.toISOString();
-    currentCardProg.lastReviewedAt = now.toISOString();
-
-    sessionState.cardProgressMap[cardId] = currentCardProg;
-
-    // Save updated session state back to Redis with 24 hours TTL
-    await redis.set(sessionKey, JSON.stringify(sessionState), { EX: 86400 });
+    await this.redis.set(sessionKey, JSON.stringify(sessionState), {
+      EX: 86400,
+    });
 
     return {
       sessionId,
       cardId,
       isCorrect,
-      cardProgress: currentCardProg,
+      cardProgress: prev,
       sessionSummary: {
         correctCount: sessionState.correctCount,
         wrongCount: sessionState.wrongCount,
@@ -244,15 +234,14 @@ export class StudyService {
     };
   }
 
-  /**
-   * 5. Sync Session Progress from Redis to Database Transaction
-   */
+  // ── 8. Sync Session Progress (Redis → DB) ────────────────────────────────────
+
   async syncProgress(userId: string, sessionId: string) {
     const sessionKey = `user:${userId}:session:${sessionId}`;
-    const rawSession = await redis.get(sessionKey);
+    const rawSession = await this.redis.get(sessionKey);
 
     if (!rawSession) {
-      throw new Error("Study session expired or not found in Redis");
+      throw new UpdatedError("Study session expired or not found", 404);
     }
 
     const sessionState: SessionProgressState = JSON.parse(rawSession);
@@ -268,20 +257,22 @@ export class StudyService {
     }));
 
     const totalCards = updates.length;
-    const score = totalCards > 0 ? Math.round((sessionState.correctCount / totalCards) * 100) : 0;
+    const score =
+      totalCards > 0
+        ? Math.round((sessionState.correctCount / totalCards) * 100)
+        : 0;
 
-    // Save session & card progress into DB atomically
-    const savedSession = await studyRepository.syncSessionProgress(
+    const savedSession = await userProgressRepository.syncSessionProgress(
       userId,
       sessionState.setId,
       sessionState.mode,
       score,
       totalCards,
-      updates
+      updates,
     );
 
-    // Evict Redis session cache after successful sync
-    await redis.del(sessionKey);
+    // Xóa session khỏi Redis sau khi sync thành công
+    await this.redis.del(sessionKey);
 
     return savedSession;
   }
