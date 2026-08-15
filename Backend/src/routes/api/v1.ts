@@ -58,15 +58,12 @@ router.put(
   validate(updateSetSchema),
   studyController.updateSet
 );
-<<<<<<< HEAD
-=======
 router.post(
   "/sets/:id/cards/bulk",
   authMiddleware,
   validate(addCardsToSetSchema),
   studyController.addCardsToSet
 );
->>>>>>> lubaodat
 router.post(
   "/sets/:id/quiz",
   validate(generateQuizSchema),

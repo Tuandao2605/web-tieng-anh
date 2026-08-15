@@ -2,7 +2,7 @@ import { NextFunction, Request, Response } from "express";
 import { redisClient } from "../utils/redis";
 import { errorResponse } from "../utils/response";
 const redis = redisClient.getInstance();
-const MAX_REQUEST = 10;
+const MAX_REQUEST = 1000;
 const WINDOWMS = 60000;
 export const rateLimitMiddleware = async (
   req: Request,

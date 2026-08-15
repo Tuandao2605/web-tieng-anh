@@ -37,6 +37,53 @@ export class StudyController {
     }
   }
 
+  async updateSet(req: Request, res: Response) {
+    try {
+      const userId = (req.user as any)?.id;
+      if (!userId) {
+        return errorResponse(res, "Unauthorized", {}, 401);
+      }
+
+      const setId = req.params.id as string;
+      const updatedSet = await studyService.updateSet(setId, userId, req.body);
+      return successResponse(res, updatedSet, "Flashcard set updated successfully");
+    } catch (error: any) {
+      if (error.message === "Forbidden") {
+        return errorResponse(res, "Forbidden", {}, 403);
+      }
+      if (error.message === "Flashcard set not found") {
+        return errorResponse(res, error.message, {}, 404);
+      }
+      return errorResponse(res, error.message || "Failed to update flashcard set", error);
+    }
+  }
+
+  async addCardsToSet(req: Request, res: Response) {
+    try {
+      const userId = (req.user as any)?.id;
+      if (!userId) {
+        return errorResponse(res, "Unauthorized", {}, 401);
+      }
+
+      const setId = req.params.id as string;
+      const updatedSet = await studyService.addCardsToSet(setId, userId, req.body.cards);
+      return successResponse(
+        res,
+        updatedSet,
+        `${req.body.cards.length} cards added successfully`,
+        201
+      );
+    } catch (error: any) {
+      if (error.message === "Forbidden") {
+        return errorResponse(res, "Forbidden", {}, 403);
+      }
+      if (error.message === "Flashcard set not found") {
+        return errorResponse(res, error.message, {}, 404);
+      }
+      return errorResponse(res, error.message || "Failed to add cards", error);
+    }
+  }
+
   /**
    * GET /api/v1/sets/:id
    */

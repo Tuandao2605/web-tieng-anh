@@ -98,7 +98,7 @@ export const useStudyStore = create<StudyState>((set, get) => ({
     try {
       const response: any = await apiClient.post(`/sets/${setId}/quiz?limit=${limit}`);
       const questions: QuizQuestion[] = response?.questions ?? (Array.isArray(response) ? response : []);
-      
+
       set({
         quizQuestions: questions,
         currentCardIndex: 0,
@@ -168,6 +168,10 @@ export const useStudyStore = create<StudyState>((set, get) => ({
       console.error('Failed to sync study session to DB:', err);
       throw err;
     }
+  },
+
+  bulkAddCards: async (setId: string, cards: CreateCardInput[]) => {
+    return get().addCardsToSet(setId, cards);
   },
 
   setCurrentCardIndex: (index: number) => set({ currentCardIndex: index }),

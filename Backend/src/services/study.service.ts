@@ -52,6 +52,11 @@ export class StudyService {
    * 2. Get Flashcard Set with Cache-Aside Strategy
    * Redis Key: set:{setId}:cards (TTL: 1 hour)
    */
+
+  async listSets(userId?: string) {
+    return studyRepository.listSets(userId);
+  }
+
   async getSetById(setId: string) {
     const cacheKey = `set:${setId}:cards`;
 
@@ -67,6 +72,17 @@ export class StudyService {
     );
   }
 
+  async updateSet(setId: string, userId: string, input: CreateSetInput) {
+    const updatedSet = await studyRepository.updateSet(setId, userId, input);
+    await cacheService.invalidateTag(["sets", `set:${setId}`]);
+    return updatedSet;
+  }
+  async addCardsToSet(setId: string, userId: string, cards: CreateCardInput[]) {
+    const updatedSet = await studyRepository.addCardsToSet(setId, userId, cards);
+    await cacheService.invalidateTag(["sets", `set:${setId}`]);
+
+    return updatedSet;
+  }
   /**
    * 3. Generate Multiple Choice Quiz (4 Options per card)
    */
@@ -76,18 +92,45 @@ export class StudyService {
       throw new Error("Set has no cards to generate quiz");
     }
 
-    const cardsToQuiz = [...set.cards]
+    const allCards: any[] = set.cards;
+
+
+    const cardsToQuiz = [...allCards]
       .sort(() => 0.5 - Math.random())
       .slice(0, limit);
 
     const questions: QuizQuestion[] = [];
 
+    // 3. Tạo quiz hoàn toàn trên Memory (RAM) - Không query DB lặp lại
     for (const card of cardsToQuiz) {
-      const distractors = await studyRepository.getRandomDistractors(setId, card.id, 3);
+      // Lấy các card khác trong cùng bộ set
+      const sameSetCards = allCards.filter((c: any) => c.id !== card.id);
 
+      let distractors: any[] = [];
+
+      // Trường hợp 1: Set đủ từ (>= 4 từ) -> Bốc ngẫu nhiên 3 từ trong set
+      if (sameSetCards.length >= 3) {
+        distractors = [...sameSetCards]
+          .sort(() => 0.5 - Math.random())
+          .slice(0, 3);
+      }
+      // Trường hợp 2: Set quá ít từ (< 4 từ) -> Query DB 1 lần duy nhất lấy thêm từ public sets
+      else {
+        const excludeIds = [card.id, ...sameSetCards.map((c: any) => c.id)];
+        const fallbackCards = await studyRepository.findGlobalCardsExcept(
+          excludeIds,
+          3 - sameSetCards.length
+        );
+        distractors = [...sameSetCards, ...fallbackCards];
+      }
+
+      // Ghép đáp án đúng + đáp án nhiễu và xáo trộn vị trí A, B, C, D
       const options = [
         { definition: card.definition, isCorrect: true },
-        ...distractors.map((d: any) => ({ definition: d.definition, isCorrect: false })),
+        ...distractors.map((d: any) => ({
+          definition: d.definition,
+          isCorrect: false,
+        })),
       ].sort(() => 0.5 - Math.random());
 
       questions.push({
