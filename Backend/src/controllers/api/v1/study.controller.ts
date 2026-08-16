@@ -117,6 +117,23 @@ export class StudyController {
     }
   }
 
+  // ── POST /api/v1/study/submit-answers (batch) ─────────────────────────────
+  async submitAnswers(req: Request, res: Response) {
+    try {
+      const userId = (req.user as any)?.id;
+      if (!userId) return errorResponse(res, "Unauthorized", {}, 401);
+
+      const { sessionId, setId, mode, answers } = req.body;
+      const results = await studyService.submitAnswers({
+        userId, sessionId, setId, mode, answers,
+      });
+      return successResponse(res, results, "Answers recorded successfully");
+    } catch (error: any) {
+      const status = error instanceof UpdatedError ? error.status : 500;
+      return errorResponse(res, error.message || "Failed to record answers", error, status);
+    }
+  }
+
   // ── POST /api/v1/study/sync-progress ────────────────────────────────────────
 
   async syncProgress(req: Request, res: Response) {
@@ -140,4 +157,3 @@ export class StudyController {
 }
 
 export default new StudyController();
-

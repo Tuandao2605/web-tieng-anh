@@ -2,6 +2,11 @@ import { create } from 'zustand';
 import type { FlashcardSet, QuizQuestion, SubmitAnswerResult, CreateSetInput, CreateCardInput } from '../types';
 import { apiClient } from '../api/apiClient';
 
+type PendingAnswer = {
+  cardId: string;
+  isCorrect: boolean;
+};
+
 interface StudyState {
   currentSet: FlashcardSet | null;
   quizQuestions: QuizQuestion[];
@@ -11,6 +16,7 @@ interface StudyState {
   currentCardIndex: number;
   correctCount: number;
   wrongCount: number;
+  pendingAnswers: PendingAnswer[];
   isLoading: boolean;
   isSyncing: boolean;
   error: string | null;
@@ -41,6 +47,7 @@ export const useStudyStore = create<StudyState>((set, get) => ({
   currentCardIndex: 0,
   correctCount: 0,
   wrongCount: 0,
+  pendingAnswers: [],
   isLoading: false,
   isSyncing: false,
   error: null,
@@ -125,39 +132,33 @@ export const useStudyStore = create<StudyState>((set, get) => ({
   },
 
   submitAnswer: async (cardId: string, isCorrect: boolean) => {
-    const { currentSessionId, currentSessionSetId, currentSessionMode } = get();
-    try {
-      const result: SubmitAnswerResult = await apiClient.post('/study/submit-answer', {
-        sessionId: currentSessionId,
-        setId: currentSessionSetId,
-        mode: currentSessionMode,
-        cardId,
-        isCorrect,
-      });
-
-      set((state) => ({
-        correctCount: isCorrect ? state.correctCount + 1 : state.correctCount,
-        wrongCount: !isCorrect ? state.wrongCount + 1 : state.wrongCount,
-      }));
-
-      return result;
-    } catch (err) {
-      console.warn('Failed to submit answer to Redis cache:', err);
-      // Fallback local update even if offline
-      set((state) => ({
-        correctCount: isCorrect ? state.correctCount + 1 : state.correctCount,
-        wrongCount: !isCorrect ? state.wrongCount + 1 : state.wrongCount,
-      }));
-      return null;
-    }
+    // Chỉ cập nhật UI và bộ đệm cục bộ. Toàn bộ đáp án được gửi một lần lúc sync.
+    set((state) => ({
+      pendingAnswers: [...state.pendingAnswers, { cardId, isCorrect }],
+      correctCount: isCorrect ? state.correctCount + 1 : state.correctCount,
+      wrongCount: !isCorrect ? state.wrongCount + 1 : state.wrongCount,
+    }));
+    return null;
   },
 
   syncProgress: async () => {
-    const { currentSessionId } = get();
+    const { currentSessionId, currentSessionSetId, currentSessionMode, pendingAnswers } = get();
     if (!currentSessionId) return null;
 
     set({ isSyncing: true });
     try {
+      if (pendingAnswers.length > 0) {
+        await apiClient.post('/study/submit-answers', {
+          sessionId: currentSessionId,
+          setId: currentSessionSetId,
+          mode: currentSessionMode,
+          answers: pendingAnswers,
+        });
+        // Chỉ xóa đúng batch đã gửi, tránh mất đáp án được thêm trong lúc chờ mạng.
+        set((state) => ({
+          pendingAnswers: state.pendingAnswers.filter((answer) => !pendingAnswers.includes(answer)),
+        }));
+      }
       const syncedSession = await apiClient.post('/study/sync-progress', {
         sessionId: currentSessionId,
       });
@@ -181,6 +182,7 @@ export const useStudyStore = create<StudyState>((set, get) => ({
       currentCardIndex: 0,
       correctCount: 0,
       wrongCount: 0,
+      pendingAnswers: [],
       currentSessionId: generateUUID(),
       currentSessionSetId: '',
       currentSessionMode: 'QUIZ',

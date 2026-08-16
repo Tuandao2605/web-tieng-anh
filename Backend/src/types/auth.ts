@@ -12,4 +12,6 @@ export type LoginData = {
 export type JwtPayLoad = {
   id: string;
   email: string;
+  name: string | null;
+  status: boolean;
 };

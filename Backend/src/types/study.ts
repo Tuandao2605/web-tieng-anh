@@ -49,3 +49,11 @@ export interface SubmitAnswerInput {
   cardId: string;
   isCorrect: boolean;
 }
+
+export interface BatchSubmitAnswersInput {
+  userId: string;
+  sessionId: string;
+  setId: string;
+  mode: string;
+  answers: Array<Pick<SubmitAnswerInput, "cardId" | "isCorrect">>;
+}

@@ -65,6 +65,18 @@ export const submitAnswerSchema = z.object({
   }),
 });
 
+export const submitAnswersSchema = z.object({
+  body: z.object({
+    sessionId: z.string().min(1, "Session ID is required"),
+    setId: z.string().length(24, "Set ID must be a MongoDB ObjectId"),
+    mode: z.string().min(1, "Study mode is required").default("QUIZ"),
+    answers: z.array(z.object({
+      cardId: z.string().length(24, "Card ID must be a MongoDB ObjectId"),
+      isCorrect: z.boolean(),
+    })).min(1, "At least one answer is required").max(500),
+  }),
+});
+
 export const syncProgressSchema = z.object({
   body: z.object({
     sessionId: z.string().min(1, "Session ID is required"),

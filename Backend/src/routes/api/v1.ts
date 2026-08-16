@@ -14,6 +14,7 @@ import {
   addCardsToSetSchema,
   generateQuizSchema,
   submitAnswerSchema,
+  submitAnswersSchema,
   syncProgressSchema,
 } from "../../validators/study.validator";
 
@@ -64,6 +65,12 @@ router.post(
   studyController.submitAnswer
 );
 router.post(
+  "/study/submit-answers",
+  authMiddleware,
+  validate(submitAnswersSchema),
+  studyController.submitAnswers
+);
+router.post(
   "/study/sync-progress",
   authMiddleware,
   validate(syncProgressSchema),
@@ -71,4 +78,3 @@ router.post(
 );
 
 export default router;
-

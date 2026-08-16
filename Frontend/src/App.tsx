@@ -8,6 +8,7 @@ import { DashboardPage } from './pages/Dashboard/DashboardPage';
 import { SetDetailPage } from './pages/Study/SetDetailPage';
 import { LearnModePage } from './pages/Study/LearnModePage';
 import { QuizModePage } from './pages/Study/QuizModePage';
+import { WriteModePage } from './pages/Study/WriteModePage';
 import { SetCreatorPage } from './pages/Study/SetCreatorPage';
 
 const queryClient = new QueryClient({
@@ -36,6 +37,7 @@ const router = createBrowserRouter([
       { path: 'set/:id/edit', element: <SetCreatorPage /> },
       { path: 'set/:id/learn', element: <LearnModePage /> },
       { path: 'set/:id/quiz', element: <QuizModePage /> },
+      { path: 'set/:id/write', element: <WriteModePage /> },
     ],
   },
   {

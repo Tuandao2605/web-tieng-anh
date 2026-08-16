@@ -80,9 +80,8 @@ export const DashboardPage: React.FC = () => {
     const fetchSets = async () => {
       try {
         setIsLoading(true);
-        // Fetch public sets - adjust endpoint if there's a user-specific endpoint
-        const data = await apiClient.get('/sets');
-        setSets(Array.isArray(data) ? data : []);
+        const data = await loadSetsOnce();
+        setSets(data);
       } catch (err: any) {
         setError(err.message);
       } finally {
@@ -193,4 +192,14 @@ export const DashboardPage: React.FC = () => {
       )}
     </div>
   );
+};
+let activeSetsRequest: Promise<FlashcardSet[]> | null = null;
+
+const loadSetsOnce = () => {
+  if (!activeSetsRequest) {
+    activeSetsRequest = apiClient.get('/sets')
+      .then((data) => Array.isArray(data) ? data : [])
+      .finally(() => { activeSetsRequest = null; });
+  }
+  return activeSetsRequest;
 };

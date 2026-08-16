@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, RotateCcw, Trophy, Zap } from 'lucide-react';
 import { useStudyStore } from '../../store/useStudyStore';
@@ -21,7 +21,7 @@ const FinishedScreen: React.FC<{
         <Trophy className="w-14 h-14 text-yellow-400" />
       </div>
       <h2 className="text-3xl font-extrabold text-slate-100">Phiên học hoàn thành!</h2>
-      
+
       <div className="w-full glass-panel rounded-2xl p-6 border border-slate-700/60 flex items-center justify-around">
         <div className="text-center">
           <p className="text-4xl font-black text-indigo-400">{percentage}%</p>
@@ -74,38 +74,52 @@ export const LearnModePage: React.FC = () => {
   } = useStudyStore();
 
   const [phase, setPhase] = useState<LearnPhase>('studying');
-
   useEffect(() => {
-    if (id) {
-      fetchSet(id).then(() => {
-        startNewSession(id, 'FLASHCARD');
-      });
-    }
-    return () => resetSession();
-  }, [id]);
+    if (!id) return;
+    let cancelled = false;
+
+    void fetchSet(id).then(() => {
+      if (!cancelled) startNewSession(id, 'FLASHCARD');
+    });
+
+    return () => {
+      cancelled = true;
+      resetSession();
+    };
+  }, [id, fetchSet, startNewSession, resetSession]);
 
   const cards = currentSet?.cards ?? [];
 
-  const handleSubmitAnswer = async (cardId: string, isCorrect: boolean) => {
-    await submitAnswer(cardId, isCorrect);
-  };
+  // Bọc tất cả Handler bằng useCallback để tránh re-render FlashcardViewer
+  const handleIndexChange = useCallback((newIndex: number) => {
+    setCurrentCardIndex(newIndex);
+  }, [setCurrentCardIndex]);
 
-  const handleSyncAndFinish = async () => {
+  const handleSubmitAnswer = useCallback(async (cardId: string, isCorrect: boolean) => {
+    await submitAnswer(cardId, isCorrect);
+  }, [submitAnswer]);
+
+  const handleFinish = useCallback(() => {
+    setPhase('finished');
+  }, []);
+
+  const handleSyncAndFinish = useCallback(async () => {
     try {
       await syncProgress();
     } catch (err) {
       console.error(err);
     } finally {
+      resetSession();
       navigate(`/set/${id}`);
     }
-  };
+  }, [syncProgress, resetSession, navigate, id]);
 
-  const handleRestart = () => {
+  const handleRestart = useCallback(() => {
     resetSession();
     if (id) startNewSession(id, 'FLASHCARD');
     setCurrentCardIndex(0);
     setPhase('studying');
-  };
+  }, [resetSession, id, startNewSession, setCurrentCardIndex]);
 
   if (isLoading) {
     return (
@@ -128,11 +142,14 @@ export const LearnModePage: React.FC = () => {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 overflow-visible relative">
       {/* Top Navigation */}
       <div className="flex items-center justify-between">
         <button
-          onClick={() => navigate(`/set/${id}`)}
+          onClick={() => {
+            resetSession();
+            navigate(`/set/${id}`);
+          }}
           className="flex items-center gap-1.5 text-sm text-slate-400 hover:text-slate-200 transition-colors"
         >
           <ArrowLeft className="w-4 h-4" />
@@ -146,15 +163,17 @@ export const LearnModePage: React.FC = () => {
       </div>
 
       {/* Main Flashcard Viewer Component */}
-      <FlashcardViewer
-        cards={cards}
-        currentIndex={currentCardIndex}
-        onIndexChange={(newIndex) => setCurrentCardIndex(newIndex)}
-        onSubmitAnswer={handleSubmitAnswer}
-        onFinish={() => setPhase('finished')}
-        correctCount={correctCount}
-        wrongCount={wrongCount}
-      />
+      <div className="w-full overflow-visible">
+        <FlashcardViewer
+          cards={cards}
+          currentIndex={currentCardIndex}
+          onIndexChange={handleIndexChange}
+          onSubmitAnswer={handleSubmitAnswer}
+          onFinish={handleFinish}
+          correctCount={correctCount}
+          wrongCount={wrongCount}
+        />
+      </div>
     </div>
   );
 };

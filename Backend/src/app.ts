@@ -63,6 +63,8 @@ const corsOptions: CorsOptions = {
   optionsSuccessStatus: 200,
   credentials: true,
   allowedHeaders: ["Authorization", "Content-Type"],
+  // Browser cache preflight Authorization/JSON requests for one day.
+  maxAge: 86400,
 };
 //Route
 app.use(routerWeb);

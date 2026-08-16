@@ -14,6 +14,23 @@
   .rotate-y-180 {
     transform: rotateY(180deg);
   }
+  .flip-card {
+    position: relative;
+    transform-style: preserve-3d;
+    -webkit-transform-style: preserve-3d;
+    will-change: transform;
+  }
+  .flip-card-face {
+    position: absolute;
+    inset: 0;
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+    -moz-backface-visibility: hidden;
+  }
+  .flip-card-face.back {
+    transform: rotateY(180deg);
+    -webkit-transform: rotateY(180deg);
+  }
 
   /* ── Card Swipe Transitions ── */
   .card-exit-left {
@@ -87,6 +104,12 @@ body {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Flashcard phải có nền đục: glass-panel trong suốt sẽ làm lộ nội dung mặt còn lại. */
+.flip-card-face {
+  background-color: #1e293b;
+  isolation: isolate;
 }
 
 .glass-card {

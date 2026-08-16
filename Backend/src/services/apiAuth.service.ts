@@ -27,6 +27,8 @@ export const apiAuthService = {
     const payload = {
       id: user.id,
       email: user.email,
+      name: user.name,
+      status: user.status,
     };
     const accessToken = generateToken(payload);
     const refreshToken = generateRefreshToken(payload);
@@ -70,15 +72,11 @@ export const apiAuthService = {
     if (blacklist) {
       return false;
     }
-    const userId = (decoded as JwtPayLoad).id;
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      omit: {
-        password: true,
-      },
-    });
-    if (!user) return false;
-    return user;
+    // Access token đã mang đủ dữ liệu cần cho request thông thường. Không query
+    // Prisma ở đây: middleware này chạy cho mọi API request học.
+    const { id, email, name, status } = decoded as Partial<JwtPayLoad>;
+    if (!id || !email || status === false) return false;
+    return { id, email, name: name ?? null, status: status ?? true };
   },
   logout: async (token: string, userId: string) => {
     const decoded = decodeToken(token);
@@ -112,6 +110,8 @@ export const apiAuthService = {
     const payload = {
       id: userId,
       email: (decoded as JwtPayLoad).email,
+      name: (decoded as Partial<JwtPayLoad>).name ?? null,
+      status: (decoded as Partial<JwtPayLoad>).status ?? true,
     };
     const newaccessToken = generateToken(payload);
     const newRefreshToken = generateRefreshToken(payload);

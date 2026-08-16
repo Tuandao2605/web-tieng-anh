@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, GraduationCap, Zap, Pencil, Globe, Lock,
-  Layers, ChevronLeft, ChevronRight, Eye, EyeOff, Volume2, PlusCircle
+  Layers, ChevronLeft, ChevronRight, Eye, EyeOff, Volume2, PlusCircle, PenLine
 } from 'lucide-react';
 import { useStudyStore } from '../../store/useStudyStore';
 import type { Card, CreateCardInput } from '../../types';
@@ -111,7 +111,7 @@ export const SetDetailPage: React.FC = () => {
       </div>
 
       {/* Study Mode Actions */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <Link
           to={`/set/${id}/learn`}
           className="flex items-center gap-4 p-5 rounded-2xl glass-card border border-indigo-500/25 hover:border-indigo-400/50 group transition-all"
@@ -135,6 +135,19 @@ export const SetDetailPage: React.FC = () => {
           <div>
             <p className="font-bold text-slate-200 group-hover:text-violet-300 transition-colors">Bài Trắc Nghiệm</p>
             <p className="text-xs text-slate-400 mt-0.5">4 lựa chọn, tính điểm tự động</p>
+          </div>
+        </Link>
+
+        <Link
+          to={`/set/${id}/write`}
+          className="flex items-center gap-4 p-5 rounded-2xl glass-card border border-emerald-500/25 hover:border-emerald-400/50 group transition-all"
+        >
+          <div className="p-3 rounded-xl bg-emerald-600/25 text-emerald-400 group-hover:bg-emerald-600/40 transition-colors">
+            <PenLine className="w-7 h-7" />
+          </div>
+          <div>
+            <p className="font-bold text-slate-200 group-hover:text-emerald-300 transition-colors">Điền từ</p>
+            <p className="text-xs text-slate-400 mt-0.5">Xem nghĩa, tự gõ từ tiếng Anh</p>
           </div>
         </Link>
       </div>

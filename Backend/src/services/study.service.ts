@@ -14,6 +14,7 @@ import {
   CardStatus,
   QuizQuestion,
   SessionProgressState,
+  BatchSubmitAnswersInput,
   SubmitAnswerInput,
 } from "../types/study";
 
@@ -164,6 +165,58 @@ export class StudyService {
   }
 
   // ── 7. Submit Answer (state kept in Redis, TTL 24h) ─────────────────────────
+
+  /**
+   * Lưu cả lượt trả lời bằng đúng một Redis GET và một Redis SET. Đây là đường
+   * chính cho UI học; submitAnswer bên dưới được giữ lại để tương thích API cũ.
+   */
+  async submitAnswers(input: BatchSubmitAnswersInput) {
+    const { userId, sessionId, setId, mode, answers } = input;
+    const sessionKey = `user:${userId}:session:${sessionId}`;
+    const rawSession = await this.redis.get(sessionKey);
+    const sessionState: SessionProgressState = rawSession
+      ? JSON.parse(rawSession)
+      : {
+          sessionId, userId, setId, mode, totalCards: 0,
+          correctCount: 0, wrongCount: 0, cardProgressMap: {},
+        };
+
+    sessionState.setId = setId;
+    sessionState.mode = mode;
+    const results = answers.map(({ cardId, isCorrect }) => {
+      if (isCorrect) sessionState.correctCount += 1;
+      else sessionState.wrongCount += 1;
+
+      const now = new Date();
+      const previous = sessionState.cardProgressMap[cardId] ?? {
+        cardId, streak: 0, correctCount: 0, wrongCount: 0, status: "NEW" as CardStatus,
+        nextReviewAt: now.toISOString(), lastReviewedAt: now.toISOString(),
+      };
+      if (isCorrect) {
+        previous.correctCount += 1;
+        previous.streak += 1;
+      } else {
+        previous.wrongCount += 1;
+        previous.streak = 0;
+      }
+      const { status, nextReviewAt } = computeNextReview(previous.streak);
+      previous.status = status;
+      previous.nextReviewAt = nextReviewAt.toISOString();
+      previous.lastReviewedAt = now.toISOString();
+      sessionState.cardProgressMap[cardId] = previous;
+
+      return {
+        sessionId, cardId, isCorrect, cardProgress: previous,
+        sessionSummary: {
+          correctCount: sessionState.correctCount,
+          wrongCount: sessionState.wrongCount,
+        },
+      };
+    });
+
+    await this.redis.set(sessionKey, JSON.stringify(sessionState), { EX: 86400 });
+    return results;
+  }
 
   async submitAnswer(input: SubmitAnswerInput) {
     const { userId, sessionId, setId, mode, cardId, isCorrect } = input;
