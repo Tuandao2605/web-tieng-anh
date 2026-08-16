@@ -5,9 +5,7 @@ import studyRepository, {
   CreateSetInput,
   UpdateSetInput,
 } from "../repositories/study.repository";
-import cardRepository, {
-  CreateCardInput,
-} from "../repositories/card.repository";
+import type { CreateCardInput } from "../repositories/card.repository";
 import userProgressRepository from "../repositories/user-progress.repository";
 import {
   CardProgressEntry,
@@ -133,33 +131,28 @@ export class StudyService {
       .sort(() => 0.5 - Math.random())
       .slice(0, limit);
 
-    const questions = await Promise.all(
-      cardsToQuiz.map(async (card: any) => {
-        // 👇 Đảm bảo ở đây dùng cardRepository
-        const distractors = await cardRepository.getRandomDistractors(
-          setId,
-          card.id,
-          3,
-        );
+    // `getSetById` đã lấy toàn bộ cards ở trên (và cache chúng). Chọn distractor
+    // trong RAM để tránh N query DB cho N câu hỏi.
+    const questions = cardsToQuiz.map((card: any) => {
+      const distractors = [...allCards]
+        .filter((candidate) => candidate.id !== card.id)
+        .sort(() => 0.5 - Math.random())
+        .slice(0, 3);
 
-        const options = [
-          { definition: card.definition, isCorrect: true },
-          ...distractors.map((d) => ({
-            definition: d.definition,
-            isCorrect: false,
-          })),
-        ].sort(() => 0.5 - Math.random());
+      const options = [
+        { definition: card.definition, isCorrect: true },
+        ...distractors.map((d) => ({ definition: d.definition, isCorrect: false })),
+      ].sort(() => 0.5 - Math.random());
 
-        return {
-          cardId: card.id,
-          term: card.term,
-          audioUrl: card.audioUrl ?? null,
-          exampleSentence: card.exampleSentence ?? null,
-          imageUrl: card.imageUrl ?? null,
-          options,
-        } satisfies QuizQuestion;
-      }),
-    );
+      return {
+        cardId: card.id,
+        term: card.term,
+        audioUrl: card.audioUrl ?? null,
+        exampleSentence: card.exampleSentence ?? null,
+        imageUrl: card.imageUrl ?? null,
+        options,
+      } satisfies QuizQuestion;
+    });
 
     return questions;
   }

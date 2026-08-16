@@ -38,6 +38,11 @@ const generateUUID = () => {
   return 'sess_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now();
 };
 
+// React Strict Mode và điều hướng có thể mount hai component cùng lúc.
+// Map này bảo đảm mỗi set chỉ có một request đang bay.
+const inFlightSetRequests = new Map<string, Promise<FlashcardSet>>();
+const inFlightQuizRequests = new Map<string, Promise<QuizQuestion[]>>();
+
 export const useStudyStore = create<StudyState>((set, get) => ({
   currentSet: null,
   quizQuestions: [],
@@ -53,15 +58,26 @@ export const useStudyStore = create<StudyState>((set, get) => ({
   error: null,
 
   fetchSet: async (setId: string) => {
+    const cachedSet = get().currentSet;
+    if (cachedSet?.id === setId) return cachedSet;
+
+    const inFlight = inFlightSetRequests.get(setId);
+    if (inFlight) return inFlight;
+
     set({ isLoading: true, error: null });
-    try {
-      const data: FlashcardSet = await apiClient.get(`/sets/${setId}`);
-      set({ currentSet: data, isLoading: false });
-      return data;
-    } catch (err: any) {
-      set({ error: err.message || 'Không thể tải bộ từ vựng', isLoading: false });
-      throw err;
-    }
+    const request: Promise<FlashcardSet> = apiClient.get(`/sets/${setId}`)
+      .then((data) => {
+        const setData = data as unknown as FlashcardSet;
+        set({ currentSet: setData, isLoading: false });
+        return setData;
+      })
+      .catch((err: any) => {
+        set({ error: err.message || 'Không thể tải bộ từ vựng', isLoading: false });
+        throw err;
+      })
+      .finally(() => inFlightSetRequests.delete(setId));
+    inFlightSetRequests.set(setId, request);
+    return request;
   },
 
   createSet: async (input: CreateSetInput) => {
@@ -101,23 +117,31 @@ export const useStudyStore = create<StudyState>((set, get) => ({
   },
 
   generateQuiz: async (setId: string, limit: number = 10) => {
-    set({ isLoading: true, error: null });
-    try {
-      const response: any = await apiClient.post(`/sets/${setId}/quiz?limit=${limit}`);
-      const questions: QuizQuestion[] = response?.questions ?? (Array.isArray(response) ? response : []);
+    const requestKey = `${setId}:${limit}`;
+    const inFlight = inFlightQuizRequests.get(requestKey);
+    if (inFlight) return inFlight;
 
-      set({
-        quizQuestions: questions,
-        currentCardIndex: 0,
-        correctCount: 0,
-        wrongCount: 0,
-        isLoading: false,
-      });
-      return questions;
-    } catch (err: any) {
-      set({ error: err.message || 'Không thể tạo bài trắc nghiệm', isLoading: false });
-      throw err;
-    }
+    set({ isLoading: true, error: null });
+    const request: Promise<QuizQuestion[]> = apiClient.post(`/sets/${setId}/quiz?limit=${limit}`)
+      .then((response) => {
+        const payload = response as unknown as { questions?: QuizQuestion[] } | QuizQuestion[];
+        const questions = Array.isArray(payload) ? payload : payload.questions ?? [];
+        set({
+          quizQuestions: questions,
+          currentCardIndex: 0,
+          correctCount: 0,
+          wrongCount: 0,
+          isLoading: false,
+        });
+        return questions;
+      })
+      .catch((err: any) => {
+        set({ error: err.message || 'Không thể tạo bài trắc nghiệm', isLoading: false });
+        throw err;
+      })
+      .finally(() => inFlightQuizRequests.delete(requestKey));
+    inFlightQuizRequests.set(requestKey, request);
+    return request;
   },
 
   startNewSession: (setId: string, mode = 'FLASHCARD') => {

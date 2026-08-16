@@ -38,32 +38,38 @@ class UserProgressRepository extends BaseRepository<UserCardProgress> {
                 data: { userId, setId, mode, score, totalCards, completedAt: new Date() },
             });
 
-            // 2. Bulk upsert tiến trình từng card
-            await Promise.all(
-                progressUpdates.map((item) =>
-                    tx.userCardProgress.upsert({
-                        where: { userId_cardId: { userId: item.userId, cardId: item.cardId } },
-                        update: {
+            // 2. MongoDB bulk update: một lệnh thay cho 3 query × mỗi card
+            // (find + upsert + refetch) mà Prisma upsert tạo ra.
+            if (progressUpdates.length > 0) {
+                const updates = progressUpdates.map((item) => ({
+                    q: {
+                        userId: { $oid: item.userId },
+                        cardId: { $oid: item.cardId },
+                    },
+                    u: {
+                        $set: {
                             status: item.status,
                             streak: item.streak,
                             correctCount: item.correctCount,
                             wrongCount: item.wrongCount,
-                            nextReviewAt: item.nextReviewAt,
-                            lastReviewedAt: item.lastReviewedAt,
+                            nextReviewAt: { $date: item.nextReviewAt.toISOString() },
+                            lastReviewedAt: { $date: item.lastReviewedAt.toISOString() },
                         },
-                        create: {
-                            userId: item.userId,
-                            cardId: item.cardId,
-                            status: item.status,
-                            streak: item.streak,
-                            correctCount: item.correctCount,
-                            wrongCount: item.wrongCount,
-                            nextReviewAt: item.nextReviewAt,
-                            lastReviewedAt: item.lastReviewedAt,
+                        $setOnInsert: {
+                            userId: { $oid: item.userId },
+                            cardId: { $oid: item.cardId },
                         },
-                    })
-                )
-            );
+                    },
+                    upsert: true,
+                    multi: false,
+                }));
+
+                await tx.$runCommandRaw({
+                    update: "user_card_progress",
+                    updates,
+                    ordered: false,
+                });
+            }
 
             return session;
         });
