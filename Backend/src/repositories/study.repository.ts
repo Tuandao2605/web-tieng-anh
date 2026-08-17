@@ -107,7 +107,7 @@ class StudyRepository {
     });
   }
 
-  /** Lấy các card ngẫu nhiên để làm distractor cho quiz */
+  /** Lấy các card ngẫu nhiên để làm distractor cho quiz (1 card) */
   async getRandomDistractors(setId: string, excludeCardId: string, limit: number = 3) {
     // Ưu tiên lấy trong cùng set
     const sameSetCards: { id: string; definition: string }[] = await db.card.findMany({
@@ -128,6 +128,34 @@ class StudyRepository {
     });
 
     return [...sameSetCards, ...fallbackCards];
+  }
+
+  /**
+   * Lấy distractor cho NHIỀU card cùng lúc — 1 query duy nhất (fix N+1)
+   * Trả về pool chung, service tự phân phối theo cardId
+   */
+  async getBulkDistractors(
+    setId: string,
+    excludeCardIds: string[],
+    poolSize: number = 30
+  ): Promise<{ id: string; definition: string }[]> {
+    // Lấy cards trong cùng set, loại trừ tất cả card đang quiz
+    const sameSetPool: { id: string; definition: string }[] = await db.card.findMany({
+      where: { setId, id: { notIn: excludeCardIds } },
+      select: { id: true, definition: true },
+      take: poolSize,
+    });
+
+    if (sameSetPool.length >= poolSize) return sameSetPool;
+
+    // Fallback: bổ sung từ global pool nếu set quá ít card
+    const fallback: { id: string; definition: string }[] = await db.card.findMany({
+      where: { id: { notIn: [...excludeCardIds, ...sameSetPool.map((c) => c.id)] } },
+      select: { id: true, definition: true },
+      take: poolSize - sameSetPool.length,
+    });
+
+    return [...sameSetPool, ...fallback];
   }
 
   async getUserProgressForCards(userId: string, cardIds: string[]) {

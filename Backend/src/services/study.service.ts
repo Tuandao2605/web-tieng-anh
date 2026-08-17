@@ -111,29 +111,41 @@ export class StudyService {
       throw new UpdatedError("Set has no cards to generate quiz", 422);
     }
 
-    const cardsToQuiz = [...set.cards]
+    const cardsToQuiz: any[] = [...set.cards]
       .sort(() => 0.5 - Math.random())
       .slice(0, limit);
 
-    const questions = await Promise.all(
-      cardsToQuiz.map(async (card: any) => {
-        const distractors = await studyRepository.getRandomDistractors(setId, card.id, 3);
+    const quizCardIds = cardsToQuiz.map((c) => c.id);
 
-        const options = [
-          { definition: card.definition, isCorrect: true },
-          ...distractors.map((d) => ({ definition: d.definition, isCorrect: false })),
-        ].sort(() => 0.5 - Math.random());
-
-        return {
-          cardId: card.id,
-          term: card.term,
-          audioUrl: card.audioUrl ?? null,
-          exampleSentence: card.exampleSentence ?? null,
-          imageUrl: card.imageUrl ?? null,
-          options,
-        } satisfies QuizQuestion;
-      })
+    // Fix N+1: lấy toàn bộ distractor pool trong 1 query duy nhất
+    const distractorPool = await studyRepository.getBulkDistractors(
+      setId,
+      quizCardIds,
+      limit * 4 // pool đủ lớn để shuffle phân phối
     );
+
+    // Phân phối distractor cho từng card trong memory (không cần thêm DB query)
+    const questions: QuizQuestion[] = cardsToQuiz.map((card) => {
+      // Shuffle pool và lấy 3 distractor khác definition của card hiện tại
+      const distractors = distractorPool
+        .filter((d) => d.definition !== card.definition)
+        .sort(() => 0.5 - Math.random())
+        .slice(0, 3);
+
+      const options = [
+        { definition: card.definition, isCorrect: true },
+        ...distractors.map((d) => ({ definition: d.definition, isCorrect: false })),
+      ].sort(() => 0.5 - Math.random());
+
+      return {
+        cardId: card.id,
+        term: card.term,
+        audioUrl: card.audioUrl ?? null,
+        exampleSentence: card.exampleSentence ?? null,
+        imageUrl: card.imageUrl ?? null,
+        options,
+      } satisfies QuizQuestion;
+    });
 
     return questions;
   }

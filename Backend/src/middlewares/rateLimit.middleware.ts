@@ -1,105 +1,65 @@
 import { NextFunction, Request, Response } from "express";
 import { redisClient } from "../utils/redis";
 import { errorResponse } from "../utils/response";
+
 const redis = redisClient.getInstance();
-const MAX_REQUEST = 10;
-const WINDOWMS = 60000;
+const MAX_REQUEST = Number(process.env.RATE_LIMIT_MAX) || 100; // Tăng ngưỡng tối đa (mặc định 100 reqs/phút)
+const WINDOWMS = Number(process.env.RATE_LIMIT_WINDOW_MS) || 60000; // 1 phút (60000ms)
+
 export const rateLimitMiddleware = async (
   req: Request,
   res: Response,
   next: NextFunction,
 ) => {
-  //Fixed Window
-  // const ip = req.ip;
-  // const key = `rateLimit:${ip}`;
-  // // tang bo dem
-  // const count = await redis.incr(key);
-  // if (count === 1) {
-  //   await redis.expire(key, Math.floor(WINDOWMS / 1000));
-  // }
-  // console.log(count);
-  // if (count > MAX_REQUEST) {
-  //   if (count >= 20) {
-  //     const ttl = await redis.ttl(key);
-  //     redis.expire(key, ttl * 2);
-  //     console.log("Tang thoi gian");
-  //   }
-  //   const timeLeft = await redis.ttl(key);
-  //   return errorResponse(
-  //     res,
-  //     "Too many request , please try again later",
-  //     {
-  //       code: "MANY_REQUESTS",
-  //       time_left_seconds: timeLeft,
-  //     },
-  //     429,
-  //   );
-  // }
+  try {
+    const now = Date.now();
+    const ip = req.ip || req.socket.remoteAddress || "127.0.0.1";
+    const key = `rateLimit:zset:${ip}`;
+    const requestId = Math.random().toString(36).substring(7);
 
-  //Sliding Window Log
-
-  const now = Date.now();
-  const ip = req.ip;
-  const key = `rateLimit:zset:${ip}`;
-  const requestId = Math.random().toString(36).substring(7);
-  //Kiem tra trung phat
-  const currentTTL = await redis.pTTL(key);
-  if (currentTTL > WINDOWMS) {
-    await redis.pExpire(key, WINDOWMS * 2);
-    const timeLeft = await redis.pTTL(key);
-    return errorResponse(
-      res,
-      "Too many request , please try again later",
-      {
-        code: "MANY_REQUESTS",
-        time_left_seconds: Math.ceil(Math.max(0, timeLeft) / 1000),
-      },
-      429,
-    );
-  }
-  const [, currentCount] = (await redis
-    .multi()
-    .zRemRangeByScore(key, 0, now - WINDOWMS)
-    .zCard(key)
-    .exec()) as [unknown, number];
-
-  if (currentCount < MAX_REQUEST) {
-    await redis
+    // 1. Dọn dẹp log cũ hơn cửa sổ thời gian (WINDOWMS) & lấy số request trong window
+    const [, currentCount] = (await redis
       .multi()
-      .zAdd(key, {
-        score: now,
-        value: `${now}:${requestId}`,
-      })
-      .pExpire(key, WINDOWMS)
-      .exec();
-  } else {
-    let timeLeft = 0;
-    await redis.zAdd(key, {
-      score: now,
-      value: `${now}:${requestId}`,
-    });
-    if (currentCount >= 20) {
-      await redis.pExpire(key, WINDOWMS * 2);
-      timeLeft = await redis.pTTL(key);
-    } else {
-      const oldestEntry = await redis.zRangeWithScores(key, 0, 0);
+      .zRemRangeByScore(key, 0, now - WINDOWMS)
+      .zCard(key)
+      .exec()) as [unknown, number];
 
-      if (oldestEntry.length > 0) {
-        const oldestScore = oldestEntry[0]?.score as number;
-        timeLeft = oldestScore + WINDOWMS - now;
-      }
+    // 2. Nếu chưa vượt quá giới hạn -> Cho phép request & ghi log mới
+    if (currentCount < MAX_REQUEST) {
+      await redis
+        .multi()
+        .zAdd(key, {
+          score: now,
+          value: `${now}:${requestId}`,
+        })
+        .pExpire(key, WINDOWMS)
+        .exec();
+
+      return next();
+    }
+
+    // 3. Nếu vượt quá giới hạn -> Tính chính xác thời gian còn lại (timeLeft) dựa trên request cũ nhất
+    const oldestEntry = await redis.zRangeWithScores(key, 0, 0);
+    let timeLeftMs = WINDOWMS;
+
+    if (oldestEntry.length > 0 && oldestEntry[0]?.score) {
+      const oldestScore = oldestEntry[0].score;
+      timeLeftMs = Math.max(0, oldestScore + WINDOWMS - now);
     }
 
     return errorResponse(
       res,
-      "Too many request , please try again later",
+      "Too many requests, please try again later",
       {
         code: "MANY_REQUESTS",
-        time_left_seconds: Math.ceil(Math.max(0, timeLeft) / 1000),
+        time_left_seconds: Math.ceil(timeLeftMs / 1000),
       },
       429,
     );
+  } catch (error) {
+    // Nếu Redis có sự cố, log lỗi và cho qua để không làm gián đoạn ứng dụng
+    console.error("Rate limit middleware error:", error);
+    next();
   }
-
-  next();
 };
+
