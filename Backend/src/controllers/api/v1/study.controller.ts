@@ -9,8 +9,8 @@ export class StudyController {
   async listSets(req: Request, res: Response) {
     try {
       const userId = (req.user as any)?.id as string | undefined;
-      const sets = await studyService.listSets(userId);
-      return successResponse(res, sets, "Flashcard sets retrieved successfully");
+      const rawJson = await studyService.listSetsRaw(userId);
+      return res.setHeader("Content-Type", "application/json").status(200).send(rawJson);
     } catch (error: any) {
       const status = error instanceof UpdatedError ? error.status : 500;
       return errorResponse(res, error.message || "Failed to retrieve flashcard sets", error, status);

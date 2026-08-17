@@ -1,4 +1,4 @@
-import * as z from "zod";
+import { z } from "zod";
 import { authService } from "../services/auth.service";
 export const registerSchema = z.object({
   body: z.object({
@@ -45,5 +45,22 @@ export const loginSchema = z.object({
     password: z.string().min(6, {
       message: "Mat khau phai tu 6 ki tu",
     }),
+  }),
+});
+
+export const forgotPasswordSchema = z.object({
+  body: z.object({
+    email: z
+      .string()
+      .trim()
+      .toLowerCase()
+      .pipe(z.email("Email không đúng định dạng")),
+  }),
+});
+
+export const resetPasswordSchema = z.object({
+  body: z.object({
+    token: z.string().min(32, "Token không hợp lệ"),
+    password: z.string().min(6, "Mật khẩu phải có ít nhất 6 ký tự").max(128),
   }),
 });

@@ -22,8 +22,9 @@ import { PrismaClient } from "../generated/prisma/client";
 //     } ,
 //     log:["query"],
 // });
+const isDev = process.env.NODE_ENV === "development";
 const prisma = new PrismaClient({
-  log: ["query"],
+  log: isDev ? ["query"] : [],
 });
 
 export { prisma };

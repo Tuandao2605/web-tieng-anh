@@ -35,6 +35,25 @@ export const apiAuthController = {
     }
     return successResponse(res, token, "Login Success");
   },
+  forgotPassword: async (req: Request, res: Response) => {
+    try {
+      await apiAuthService.requestPasswordReset(req.body.email);
+      return successResponse(res, {}, "Nếu email tồn tại, liên kết đặt lại mật khẩu đã được gửi.");
+    } catch (error) {
+      // Giữ thông điệp chung để tránh dò email, đồng thời không tiết lộ lỗi SMTP.
+      console.error("Password reset email failed", error);
+      return successResponse(res, {}, "Nếu email tồn tại, liên kết đặt lại mật khẩu đã được gửi.");
+    }
+  },
+  resetPassword: async (req: Request, res: Response) => {
+    try {
+      const updated = await apiAuthService.resetPassword(req.body.token, req.body.password);
+      if (!updated) return errorResponse(res, "Liên kết đặt lại mật khẩu không hợp lệ hoặc đã hết hạn", {}, 400);
+      return successResponse(res, {}, "Đặt lại mật khẩu thành công");
+    } catch {
+      return errorResponse(res, "Không thể đặt lại mật khẩu", {}, 500);
+    }
+  },
 
   profile: (req: Request, res: Response) => {
     return successResponse(res, req.user, "Get user profile success");

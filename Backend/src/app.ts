@@ -21,7 +21,9 @@ import {
 const app: Application = express();
 const port: number = 3000;
 
-app.use(morgan("tiny"));
+if (process.env.NODE_ENV === "development") {
+  app.use(morgan("tiny"));
+}
 app.use(express.json());
 app.use(express.urlencoded());
 app.use(expressLayouts);

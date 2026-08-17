@@ -61,6 +61,25 @@ export class StudyService {
     );
   }
 
+  async listSetsRaw(userId?: string): Promise<string> {
+    const cacheKey = userId ? `sets:user:${userId}:raw` : "sets:public:raw";
+    const tags = userId ? ["sets", `user:${userId}:sets`] : ["sets", "public"];
+
+    return cacheService.getOrSetRawWithTag(
+      cacheKey,
+      () => studyRepository.listSets(userId),
+      tags,
+      300,
+      (data) => ({
+        obj: {
+          success: true,
+          data,
+          message: "Flashcard sets retrieved successfully",
+        },
+      }),
+    );
+  }
+
   // ── 2. Create Set ───────────────────────────────────────────────────────────
 
   async createSet(input: CreateSetInput) {

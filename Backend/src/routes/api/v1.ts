@@ -1,6 +1,6 @@
 import express from "express";
 import { validate } from "../../middlewares/validate.middleware";
-import { loginSchema, registerSchema } from "../../validators/auth.validator";
+import { forgotPasswordSchema, loginSchema, registerSchema, resetPasswordSchema } from "../../validators/auth.validator";
 import { authMiddleware } from "../../middlewares/auth.middleware";
 import { optionalAuthMiddleware } from "../../middlewares/optionalAuth.middleware";
 import { apiAuthController } from "../../controllers/api/v1/auth.controller";
@@ -24,6 +24,8 @@ const router = express.Router();
 
 router.post("/auth/login", validate(loginSchema), apiAuthController.login);
 router.post("/auth/register", validate(registerSchema), apiAuthController.register);
+router.post("/auth/forgot-password", validate(forgotPasswordSchema), apiAuthController.forgotPassword);
+router.post("/auth/reset-password", validate(resetPasswordSchema), apiAuthController.resetPassword);
 router.get("/auth/me", authMiddleware, apiAuthController.profile);
 router.delete("/auth/logout", authMiddleware, apiAuthController.logout);
 router.post("/auth/refresh-token", apiAuthController.refreshToken);

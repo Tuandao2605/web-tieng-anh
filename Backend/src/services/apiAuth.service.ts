@@ -2,6 +2,9 @@ import { verifyPassword } from "../utils/hash";
 import { prisma } from "../libs/prisma";
 import { JwtPayLoad, LoginData } from "../types/auth";
 import { redisClient } from "../utils/redis";
+import { mailService } from "./mail.service";
+import { createHash, randomBytes } from "node:crypto";
+import { hashPassword } from "../utils/hash";
 const redis = redisClient.getInstance();
 import {
   decodeToken,
@@ -10,6 +13,32 @@ import {
   verifyRefreshToken,
   verifyToken,
 } from "../utils/jwt";
+
+// ─── In-process Secure JWT cache ────────────────────────────────────────────────
+// Key: full raw token string (ensures ONLY tokens that passed HMAC verification are cached)
+// TTL: 60 seconds
+const JWT_CACHE_TTL_MS = 60_000;
+const JWT_CACHE_MAX = 10_000;
+const _jwtCache = new Map<string, { payload: { id: string; email: string; name: string | null; status: boolean }; expiresAt: number }>();
+
+function jwtCacheGet(token: string) {
+  const entry = _jwtCache.get(token);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) { _jwtCache.delete(token); return null; }
+  return entry.payload;
+}
+
+function jwtCacheSet(token: string, payload: { id: string; email: string; name: string | null; status: boolean }) {
+  if (_jwtCache.size >= JWT_CACHE_MAX) {
+    const firstKey = _jwtCache.keys().next().value;
+    if (firstKey) _jwtCache.delete(firstKey);
+  }
+  _jwtCache.set(token, { payload, expiresAt: Date.now() + JWT_CACHE_TTL_MS });
+}
+
+function jwtCacheDelete(token: string) {
+  _jwtCache.delete(token);
+}
 
 export const apiAuthService = {
   login: async ({ email, password }: LoginData) => {
@@ -62,27 +91,75 @@ export const apiAuthService = {
       refreshToken,
     };
   },
+  requestPasswordReset: async (email: string) => {
+    const user = await prisma.user.findUnique({ where: { email } });
+    // Không cho client biết email có tồn tại hay không.
+    if (!user) return;
+
+    const token = randomBytes(32).toString("hex");
+    const tokenHash = createHash("sha256").update(token).digest("hex");
+    await redis.set(`password_reset:${tokenHash}`, JSON.stringify({ userId: user.id }), { EX: 900 });
+
+    const frontendUrl = process.env.FRONTEND_URL ?? "http://localhost:5500";
+    const resetUrl = `${frontendUrl}/reset-password?token=${encodeURIComponent(token)}`;
+    await mailService.sendMail(
+      user.email,
+      "Đặt lại mật khẩu Quizlet Pro",
+      `<p>Xin chào,</p>
+       <p>Nhấn vào liên kết dưới đây để đặt lại mật khẩu. Liên kết có hiệu lực trong <b>15 phút</b> và chỉ dùng một lần.</p>
+       <p><a href="${resetUrl}">Đặt lại mật khẩu</a></p>
+       <p>Nếu bạn không yêu cầu thao tác này, hãy bỏ qua email.</p>`,
+    );
+  },
+  resetPassword: async (token: string, password: string) => {
+    const tokenHash = createHash("sha256").update(token).digest("hex");
+    const resetKey = `password_reset:${tokenHash}`;
+    const raw = await redis.get(resetKey);
+    if (!raw) return false;
+
+    // Xóa token trước khi ghi để token không thể được dùng lại trong request song song.
+    await redis.del(resetKey);
+    const { userId } = JSON.parse(raw) as { userId: string };
+    await prisma.user.update({ where: { id: userId }, data: { password: hashPassword(password) } });
+    return true;
+  },
   getProfile: async (token: string) => {
+    if (!token) return false;
+
+    // 1. FAST PATH (Cache HIT): If this EXACT token string was previously verified, return payload
+    // Speed: ~0.05ms (0 CPU cryptographic cost). Safe: Forged tokens will hit Cache MISS below!
+    const cached = jwtCacheGet(token);
+    if (cached) return cached;
+
+    // 2. SLOW PATH (Cache MISS): Mandatory HMAC signature verification with JWT_SECRET
     const decoded = verifyToken(token);
     if (!decoded) return false;
 
-    //Kiem tra blacklist
-    const jti = (decoded as JwtPayLoad & { jti: string })?.jti;
-    const blacklist = await redis.get(`blacklist_token:${jti}`);
+    const validJti = (decoded as JwtPayLoad & { jti: string })?.jti;
+    if (!validJti) return false;
+
+    // 3. Check Redis blacklist for revoked tokens
+    const blacklist = await redis.get(`blacklist_token:${validJti}`);
     if (blacklist) {
       return false;
     }
-    // Access token đã mang đủ dữ liệu cần cho request thông thường. Không query
-    // Prisma ở đây: middleware này chạy cho mọi API request học.
+
     const { id, email, name, status } = decoded as Partial<JwtPayLoad>;
     if (!id || !email || status === false) return false;
-    return { id, email, name: name ?? null, status: status ?? true };
+
+    const payload = { id, email, name: name ?? null, status: status ?? true };
+
+    // 4. Verification successful -> Store raw token string in memory cache
+    jwtCacheSet(token, payload);
+    return payload;
   },
   logout: async (token: string, userId: string) => {
     const decoded = decodeToken(token);
     const jti = (decoded as { jti: string }).jti;
     const now = Math.floor(Date.now() / 1000);
     const ttl = (decoded as { exp: number }).exp - now;
+    // Evict raw token from in-process cache
+    jwtCacheDelete(token);
     const blacklist = await redis.set(
       `blacklist_token:${jti}`,
       JSON.stringify({

@@ -4,6 +4,8 @@ import { Layout } from './components/layout/Layout';
 import { ProtectedRoute } from './components/common/ProtectedRoute';
 import { LoginPage } from './pages/Auth/LoginPage';
 import { RegisterPage } from './pages/Auth/RegisterPage';
+import { ForgotPasswordPage } from './pages/Auth/ForgotPasswordPage';
+import { ResetPasswordPage } from './pages/Auth/ResetPasswordPage';
 import { DashboardPage } from './pages/Dashboard/DashboardPage';
 import { SetDetailPage } from './pages/Study/SetDetailPage';
 import { LearnModePage } from './pages/Study/LearnModePage';
@@ -48,6 +50,8 @@ const router = createBrowserRouter([
     path: '/register',
     element: <Layout><RegisterPage /></Layout>,
   },
+  { path: '/forgot-password', element: <Layout><ForgotPasswordPage /></Layout> },
+  { path: '/reset-password', element: <Layout><ResetPasswordPage /></Layout> },
 ]);
 
 export default function App() {
