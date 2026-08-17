@@ -7,6 +7,7 @@ import crypto, { BinaryLike } from "crypto";
 import { IncludeRelations } from "../types/query";
 import { Prisma } from "../generated/prisma";
 import { UpdatedError } from "../errors/app.error";
+import { elasticsearchService } from "./elasticsearch.service";
 interface SearchQuery {
   page?: string;
   limit?: string;
@@ -206,6 +207,9 @@ export const usersService = {
           return updated;
         },
       );
+      await elasticsearchService.syncDecksByUser(id).catch((error) => {
+        console.warn("Unable to sync deck author to Elasticsearch", error);
+      });
       return user;
     } catch (error: any) {
       if (error.code === "P2025") {

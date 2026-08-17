@@ -4,6 +4,19 @@ import { UpdatedError } from "../../../errors/app.error";
 import { errorResponse, successResponse } from "../../../utils/response";
 
 export class StudyController {
+  async searchPublicDecks(req: Request, res: Response) {
+    try {
+      const { q, page, limit } = req.query as unknown as {
+        q: string; page: number; limit: number;
+      };
+      const result = await studyService.searchPublicDecks(q, page, limit);
+      return successResponse(res, result, "Public decks retrieved successfully");
+    } catch (error: any) {
+      const status = error instanceof UpdatedError ? error.status : 500;
+      return errorResponse(res, error.message || "Failed to search public decks", error, status);
+    }
+  }
+
   // ── GET /api/v1/sets ────────────────────────────────────────────────────────
 
   async listSets(req: Request, res: Response) {

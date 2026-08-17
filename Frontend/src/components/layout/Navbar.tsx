@@ -2,6 +2,7 @@ import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { BookOpen, PlusCircle, LogOut, User as UserIcon, Sparkles, LayoutDashboard } from 'lucide-react';
 import { useAuthStore } from '../../store/useAuthStore';
+import { GlobalDeckSearch } from './GlobalDeckSearch';
 
 export const Navbar: React.FC = () => {
   const { user, isAuthenticated, logout } = useAuthStore();
@@ -15,7 +16,7 @@ export const Navbar: React.FC = () => {
   return (
     <header className="sticky top-0 z-50 glass-panel border-b border-slate-700/50 shadow-lg">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16">
+        <div className="flex min-h-16 flex-wrap items-center justify-between gap-y-2 py-2">
           {/* Logo */}
           <Link to="/" className="flex items-center gap-2 font-bold text-xl text-indigo-400 hover:text-indigo-300 transition-colors">
             <div className="p-2 rounded-xl bg-indigo-600/30 text-indigo-400 border border-indigo-500/30">
@@ -25,6 +26,10 @@ export const Navbar: React.FC = () => {
               Quizlet Pro
             </span>
           </Link>
+
+          <div className="order-3 w-full md:order-none md:max-w-lg md:flex-1 md:px-5">
+            <GlobalDeckSearch />
+          </div>
 
           {/* Nav Actions */}
           <div className="flex items-center gap-4">

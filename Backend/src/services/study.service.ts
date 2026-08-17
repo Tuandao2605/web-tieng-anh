@@ -7,6 +7,7 @@ import studyRepository, {
 } from "../repositories/study.repository";
 import type { CreateCardInput } from "../repositories/card.repository";
 import userProgressRepository from "../repositories/user-progress.repository";
+import { elasticsearchService } from "./elasticsearch.service";
 import {
   CardProgressEntry,
   CardStatus,
@@ -80,11 +81,43 @@ export class StudyService {
     );
   }
 
+  async searchPublicDecks(keyword: string, page: number, limit: number) {
+    const normalizedKeyword = keyword.trim();
+    let result;
+    try {
+      result = await elasticsearchService.searchPublicDecks(normalizedKeyword, page, limit);
+    } catch (error) {
+      if (process.env.ELASTICSEARCH_FALLBACK_TO_MONGO !== "true") {
+        throw new UpdatedError("Search service is temporarily unavailable", 503, error);
+      }
+      result = await studyRepository.searchPublicSets(normalizedKeyword, page, limit);
+    }
+    return {
+      decks: result.decks.map((deck: any) => ({
+        id: deck.id,
+        title: deck.title,
+        description: deck.description,
+        cardCount: deck.cardCount,
+        author: deck.author ?? { id: deck.userId, name: deck.authorName },
+        updatedAt: deck.updatedAt,
+      })),
+      pagination: {
+        page,
+        limit,
+        total: result.total,
+        totalPages: Math.ceil(result.total / limit),
+      },
+    };
+  }
+
   // ── 2. Create Set ───────────────────────────────────────────────────────────
 
   async createSet(input: CreateSetInput) {
     const newSet = await studyRepository.createSet(input);
     await cacheService.invalidateTag(["sets", "public"]);
+    await elasticsearchService.syncDeck(newSet.id).catch((error) => {
+      console.warn("Unable to sync created deck to Elasticsearch", error);
+    });
     return newSet;
   }
 
@@ -99,7 +132,13 @@ export class StudyService {
         throw new UpdatedError("Failed to update flashcard set", 500, err);
       });
 
-    await cacheService.invalidateTag(["sets", `set:${setId}`]);
+    await Promise.all([
+      cacheService.invalidateTag(["sets", `set:${setId}`]),
+      cacheService.invalidateTag(["sets", "public"]),
+    ]);
+    await elasticsearchService.syncDeck(setId).catch((error) => {
+      console.warn("Unable to sync updated deck to Elasticsearch", error);
+    });
     return updated;
   }
 
@@ -114,7 +153,13 @@ export class StudyService {
         throw new UpdatedError("Failed to add cards", 500, err);
       });
 
-    await cacheService.invalidateTag([`set:${setId}`]);
+    await Promise.all([
+      cacheService.invalidateTag(["sets", `set:${setId}`]),
+      cacheService.invalidateTag(["sets", "public"]),
+    ]);
+    await elasticsearchService.syncDeck(setId).catch((error) => {
+      console.warn("Unable to sync deck card count to Elasticsearch", error);
+    });
     return updated;
   }
 

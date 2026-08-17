@@ -7,14 +7,16 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "tsc && mkdir -p dist/src && cp -r src/generated dist/src/",
     "dev": "nodemon src/app.ts",
-    "start": "node dist/app.js",
+    "start": "node dist/src/app.js",
     "lint": "eslint src/**/*.ts",
-    "lint:fix": "eslint src/**/*.ts --fix"
+    "lint:fix": "eslint src/**/*.ts --fix",
+    "search:reindex": "ts-node src/scripts/reindex-public-decks.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@elastic/elasticsearch": "^8.19.2",
     "@prisma/adapter-mariadb": "^7.4.2",
     "@prisma/client": "^6.19.2",
     "@socket.io/redis-adapter": "^8.3.0",

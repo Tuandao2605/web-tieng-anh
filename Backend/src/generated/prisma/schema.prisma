@@ -45,6 +45,7 @@ model FlashcardSet {
   studySessions StudySession[]
 
   @@index([userId, isPublic])
+  @@index([isPublic, title])
   @@map("flashcard_sets")
 }
 

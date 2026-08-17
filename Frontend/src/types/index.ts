@@ -30,6 +30,25 @@ export interface FlashcardSet {
   cards: Card[];
 }
 
+export interface PublicDeckSearchItem {
+  id: string;
+  title: string;
+  description?: string | null;
+  cardCount: number;
+  author: { id: string; name: string };
+  updatedAt: string;
+}
+
+export interface PublicDeckSearchResponse {
+  decks: PublicDeckSearchItem[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
 export interface CreateCardInput {
   term: string;
   definition: string;

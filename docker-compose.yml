@@ -81,7 +81,20 @@ services:
     volumes:
       - redis-data:/data
 
-  # 6. Nginx Reverse Proxy + Gzip Compression
+  # 6. Elasticsearch for accent-insensitive public deck search
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.4
+    container_name: english-learning-elasticsearch
+    ports:
+      - "9200:9200"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+
+  # 7. Nginx Reverse Proxy + Gzip Compression
   nginx:
     image: nginx:alpine
     container_name: english-learning-nginx
@@ -96,3 +109,4 @@ volumes:
   mongo-db-data:
   mongo-key-data:
   redis-data:
+  elasticsearch-data:

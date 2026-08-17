@@ -1,6 +1,7 @@
 import { FlashcardSet } from "../generated/prisma/client";
 import { BaseRepository } from "./base.repository";
 import { CreateCardInput } from "./card.repository";
+import { prisma } from "../libs/prisma";
 
 export interface CreateSetInput {
   userId: string;
@@ -29,6 +30,56 @@ class StudyRepository extends BaseRepository<FlashcardSet> {
       include: { cards: true },
       orderBy: { createdAt: "desc" },
     });
+  }
+
+  async searchPublicSets(keyword: string, page: number, limit: number) {
+    const where = {
+      isPublic: true,
+      title: { contains: keyword, mode: "insensitive" as const },
+    };
+    const [decks, total] = await Promise.all([
+      this.model.findMany({
+        where,
+        select: {
+          id: true,
+          userId: true,
+          title: true,
+          description: true,
+          updatedAt: true,
+          _count: { select: { cards: true } },
+        },
+        orderBy: { updatedAt: "desc" },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.model.count({ where }),
+    ]);
+
+    const authorIds: string[] = Array.from(
+      new Set<string>(decks.map((deck: { userId: string }) => deck.userId)),
+    );
+    const authors = authorIds.length > 0
+      ? await prisma.user.findMany({
+          where: { id: { in: authorIds } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const authorById = new Map(authors.map((author) => [author.id, author.name]));
+
+    return {
+      decks: decks.map((deck: any) => ({
+        id: deck.id,
+        title: deck.title,
+        description: deck.description,
+        cardCount: deck._count.cards,
+        author: {
+          id: deck.userId,
+          name: authorById.get(deck.userId) ?? "Unknown author",
+        },
+        updatedAt: deck.updatedAt,
+      })),
+      total,
+    };
   }
 
   async createSet(input: CreateSetInput) {

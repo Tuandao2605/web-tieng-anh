@@ -54,6 +54,14 @@ export const generateQuizSchema = z.object({
   }),
 });
 
+export const searchPublicDecksSchema = z.object({
+  query: z.object({
+    q: z.string().trim().min(1, "Search keyword is required").max(100),
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(50).default(10),
+  }),
+});
+
 export const submitAnswerSchema = z.object({
   body: z.object({
     sessionId: z.string().min(1, "Session ID is required"),
