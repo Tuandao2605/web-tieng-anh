@@ -50,6 +50,8 @@ export interface PublicDeckSearchResponse {
 }
 
 export interface CreateCardInput {
+  /** Present when an existing card is edited; omitted for a newly added card. */
+  id?: string;
   term: string;
   definition: string;
   audioUrl?: string;

@@ -49,6 +49,7 @@ export const SetFormEditor: React.FC<SetFormEditorProps> = ({
       description: initialData?.description || '',
       isPublic: initialData?.isPublic ?? true,
       cards: initialData?.cards?.map((c) => ({
+        id: c.id,
         term: c.term,
         definition: c.definition,
         exampleSentence: c.exampleSentence || '',
@@ -60,6 +61,8 @@ export const SetFormEditor: React.FC<SetFormEditorProps> = ({
   const { fields, append, remove, move, replace } = useFieldArray({
     control,
     name: 'cards',
+    // Do not overwrite the database `id` stored in each existing card.
+    keyName: 'fieldKey',
   });
 
   const isPublic = watch('isPublic');
@@ -73,6 +76,7 @@ export const SetFormEditor: React.FC<SetFormEditorProps> = ({
         description: initialData.description || '',
         isPublic: initialData.isPublic,
         cards: initialData.cards.map((c) => ({
+          id: c.id,
           term: c.term,
           definition: c.definition,
           exampleSentence: c.exampleSentence || '',
@@ -134,6 +138,7 @@ export const SetFormEditor: React.FC<SetFormEditorProps> = ({
       description: data.description?.trim(),
       isPublic: data.isPublic,
       cards: validCards.map((c) => ({
+        id: c.id,
         term: c.term.trim(),
         definition: c.definition.trim(),
         exampleSentence: c.exampleSentence?.trim() || undefined,
@@ -274,7 +279,7 @@ export const SetFormEditor: React.FC<SetFormEditorProps> = ({
 
             return (
               <div
-                key={field.id}
+                key={field.fieldKey}
                 className="glass-card rounded-2xl p-5 border border-slate-700/60 space-y-4 relative group hover:border-indigo-500/40 transition-all"
               >
                 {/* Row Header */}

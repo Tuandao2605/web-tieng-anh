@@ -15,6 +15,7 @@ export interface UpdateSetInput {
   title?: string;
   description?: string;
   isPublic?: boolean;
+  cards?: Array<CreateCardInput & { id?: string }>;
 }
 
 class StudyRepository extends BaseRepository<FlashcardSet> {
@@ -104,14 +105,82 @@ class StudyRepository extends BaseRepository<FlashcardSet> {
   }
 
   async updateSet(setId: string, input: UpdateSetInput) {
-    return this.model.update({
-      where: { id: setId },
-      data: {
-        title: input.title,
-        description: input.description,
-        isPublic: input.isPublic,
-      },
-      include: { cards: true },
+    return prisma.$transaction(async (tx) => {
+      const existingSet = await tx.flashcardSet.findUnique({
+        where: { id: setId },
+        select: { id: true },
+      });
+      if (!existingSet) {
+        const error = new Error("Flashcard set not found") as Error & { code: string };
+        error.code = "P2025";
+        throw error;
+      }
+
+      await tx.flashcardSet.update({
+        where: { id: setId },
+        data: {
+          ...(input.title !== undefined ? { title: input.title } : {}),
+          ...(input.description !== undefined ? { description: input.description } : {}),
+          ...(input.isPublic !== undefined ? { isPublic: input.isPublic } : {}),
+        },
+      });
+
+      if (input.cards) {
+        const existingCards = await tx.card.findMany({
+          where: { setId },
+          select: { id: true },
+        });
+        const existingIds = new Set(existingCards.map((card) => card.id));
+        const submittedExistingCards = input.cards.filter((card) => card.id);
+
+        const foreignCard = submittedExistingCards.find(
+          (card) => !existingIds.has(card.id as string),
+        );
+        if (foreignCard) {
+          throw new Error("A submitted card does not belong to this flashcard set");
+        }
+
+        const retainedIds = submittedExistingCards.map((card) => card.id as string);
+        await tx.card.deleteMany({
+          where: {
+            setId,
+            ...(retainedIds.length > 0 ? { id: { notIn: retainedIds } } : {}),
+          },
+        });
+
+        await Promise.all(
+          submittedExistingCards.map((card) =>
+            tx.card.update({
+              where: { id: card.id as string },
+              data: {
+                term: card.term,
+                definition: card.definition,
+                exampleSentence: card.exampleSentence || null,
+                imageUrl: card.imageUrl || null,
+              },
+            }),
+          ),
+        );
+
+        const newCards = input.cards.filter((card) => !card.id);
+        if (newCards.length > 0) {
+          await tx.card.createMany({
+            data: newCards.map((card) => ({
+              setId,
+              term: card.term,
+              definition: card.definition,
+              audioUrl: card.audioUrl || null,
+              exampleSentence: card.exampleSentence || null,
+              imageUrl: card.imageUrl || null,
+            })),
+          });
+        }
+      }
+
+      return tx.flashcardSet.findUniqueOrThrow({
+        where: { id: setId },
+        include: { cards: true },
+      });
     });
   }
 

@@ -1,5 +1,13 @@
 import { z } from "zod";
 
+const cardInputSchema = z.object({
+  term: z.string().trim().min(1, "Term is required").max(255),
+  definition: z.string().trim().min(1, "Definition is required").max(2000),
+  audioUrl: z.string().url().optional().or(z.literal("")),
+  exampleSentence: z.string().optional(),
+  imageUrl: z.string().url().optional().or(z.literal("")),
+});
+
 export const createSetSchema = z.object({
   body: z.object({
     title: z.string().min(1, "Title is required").max(255),
@@ -7,21 +15,23 @@ export const createSetSchema = z.object({
     isPublic: z.boolean().default(true),
     cards: z
       .array(
-        z.object({
-          term: z.string().min(1, "Term is required"),
-          definition: z.string().min(1, "Definition is required"),
-          audioUrl: z.string().url().optional().or(z.literal("")),
-          exampleSentence: z.string().optional(),
-          imageUrl: z.string().url().optional().or(z.literal("")),
-        })
+        cardInputSchema
       )
       .min(1, "Must contain at least 1 card"),
   }),
 });
 
-export const updateSetSchema = createSetSchema.extend({
+export const updateSetSchema = z.object({
   params: z.object({
     id: z.string().length(24, "Set ID must be a MongoDB ObjectId"),
+  }),
+  body: createSetSchema.shape.body.extend({
+    cards: z
+      .array(cardInputSchema.extend({
+        id: z.string().length(24, "Card ID must be a MongoDB ObjectId").optional(),
+      }))
+      .min(1, "Must contain at least 1 card")
+      .max(500, "Can only update up to 500 cards at a time"),
   }),
 });
 
@@ -32,13 +42,7 @@ export const addCardsToSetSchema = z.object({
   body: z.object({
     cards: z
       .array(
-        z.object({
-          term: z.string().trim().min(1, "Term is required").max(255),
-          definition: z.string().trim().min(1, "Definition is required").max(2000),
-          audioUrl: z.string().url().optional().or(z.literal("")),
-          exampleSentence: z.string().optional(),
-          imageUrl: z.string().url().optional().or(z.literal("")),
-        })
+        cardInputSchema
       )
       .min(1, "Must contain at least 1 card")
       .max(200, "Can only add up to 200 cards at a time"),
