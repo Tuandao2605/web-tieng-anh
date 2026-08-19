@@ -50,20 +50,12 @@ export class StudyService {
 
   // ── 1. List Sets ────────────────────────────────────────────────────────────
 
-  async listSets(userId?: string) {
-    const cacheKey = userId ? `sets:user:${userId}` : "sets:public";
-    const tags = userId ? ["sets", `user:${userId}:sets`] : ["sets", "public"];
-
-    return cacheService.getOrSetWithTag(
-      cacheKey,
-      () => studyRepository.listSets(userId),
-      tags,
-      300, // 5 min TTL (list changes frequently)
-    );
-  }
-
   async listSetsRaw(userId?: string): Promise<string> {
-    const cacheKey = userId ? `sets:user:${userId}:raw` : "sets:public:raw";
+    // A single cached representation is enough: this raw JSON is sent directly
+    // by the controller and avoids serializing the same list on every hit.
+    const cacheKey = userId
+      ? `sets:list:summary:v1:user:${userId}`
+      : "sets:list:summary:v1:public";
     const tags = userId ? ["sets", `user:${userId}:sets`] : ["sets", "public"];
 
     return cacheService.getOrSetRawWithTag(

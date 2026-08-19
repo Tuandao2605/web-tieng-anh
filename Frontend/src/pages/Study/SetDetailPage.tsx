@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link } from 'react-router-dom';
 import {
-  ArrowLeft, GraduationCap, Zap, Pencil, Globe, Lock,
+  GraduationCap, Zap, Pencil, Globe, Lock,
   Layers, ChevronLeft, ChevronRight, Eye, EyeOff, Volume2, PlusCircle, PenLine
 } from 'lucide-react';
 import { useStudyStore } from '../../store/useStudyStore';
@@ -10,7 +10,6 @@ import { BulkAddCardsModal } from '../../components/study/BulkAddCardsModal';
 
 export const SetDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const { currentSet, fetchSet, addCardsToSet, isLoading, error } = useStudyStore();
   const [previewIndex, setPreviewIndex] = useState(0);
   const [showDefinition, setShowDefinition] = useState(false);
@@ -69,11 +68,6 @@ export const SetDetailPage: React.FC = () => {
     <div className="space-y-8">
       {/* Header */}
       <div>
-        <button onClick={() => navigate(-1)} className="flex items-center gap-1.5 text-sm text-slate-400 hover:text-slate-200 mb-4 transition-colors">
-          <ArrowLeft className="w-4 h-4" />
-          Quay lại
-        </button>
-
         <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
           <div className="flex-1">
             <h1 className="text-3xl font-extrabold text-slate-100 tracking-tight">{currentSet.title}</h1>

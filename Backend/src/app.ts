@@ -30,15 +30,12 @@ app.use(expressLayouts);
 app.use(express.static("public"));
 
 app.set("trust proxy", 1); // trust first proxy
-app.use(
-  session({
-    secret: "aa8c487d27f4d34e2db32708b734c26d316b97769bc1909f929c67660bf421c5",
-    resave: false,
-    saveUninitialized: true,
-    cookie: { secure: false },
-  }),
-);
-app.use(flash());
+const webSessionMiddleware = session({
+  secret: process.env.SESSION_SECRET ?? "local-development-session-secret",
+  resave: false,
+  saveUninitialized: false,
+  cookie: { secure: false },
+});
 
 app.set("layout", "layouts/main.layouts.ejs");
 app.set("layout extractScripts", true);
@@ -68,9 +65,16 @@ const corsOptions: CorsOptions = {
   // Browser cache preflight Authorization/JSON requests for one day.
   maxAge: 86400,
 };
+
+// JWT APIs do not need express-session. Mounting them first avoids allocating,
+// loading and saving a server session for every API request.
+app.use("/api", cors(corsOptions), routerApi);
+
+// Session and flash are only needed by the server-rendered web routes.
+app.use(webSessionMiddleware);
+app.use(flash());
 //Route
 app.use(routerWeb);
-app.use("/api", cors(corsOptions), routerApi);
 
 app.use(notFoundMiddleware);
 app.use(errorHandlingMiddleware);

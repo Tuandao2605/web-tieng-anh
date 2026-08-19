@@ -1,42 +1,14 @@
 import React, { useMemo, useState } from 'react';
 import { AlertCircle, CheckCircle2, ClipboardPaste, Loader2, Plus, Trash2, X } from 'lucide-react';
 import type { CreateCardInput } from '../../types';
+import { splitBulkCardLine } from '../../utils/bulkCardParser';
+import type { SeparatorMode } from '../../utils/bulkCardParser';
 
 interface BulkAddCardsModalProps {
   isOpen: boolean;
   isSubmitting?: boolean;
   onClose: () => void;
   onSubmit: (cards: CreateCardInput[]) => Promise<void>;
-}
-
-type SeparatorMode = 'auto' | 'tab' | 'pipe' | 'semicolon' | 'comma' | 'parenthesis';
-
-const separators: Record<Exclude<SeparatorMode, 'auto'>, string> = {
-  tab: '\t',
-  pipe: '|',
-  semicolon: ';',
-  comma: ',',
-  parenthesis: '(',
-};
-
-function splitLine(line: string, mode: SeparatorMode) {
-  if (mode !== 'auto') {
-    const separator = separators[mode];
-    const index = line.indexOf(separator);
-    if (index === -1) return null;
-    return [line.slice(0, index), line.slice(index + separator.length)];
-  }
-
-  // Prefer separators that are less likely to occur inside a definition.
-  const candidates = ['\t', '|', ';', ','];
-  for (const separator of candidates) {
-    const index = line.indexOf(separator);
-    if (index !== -1) {
-      return [line.slice(0, index), line.slice(index + separator.length)];
-    }
-  }
-
-  return null;
 }
 
 export const BulkAddCardsModal: React.FC<BulkAddCardsModalProps> = ({
@@ -58,7 +30,7 @@ export const BulkAddCardsModal: React.FC<BulkAddCardsModalProps> = ({
       const line = rawLine.trim();
       if (!line) return;
 
-      const parts = splitLine(line, separatorMode);
+      const parts = splitBulkCardLine(line, separatorMode);
       if (!parts) {
         invalidLines.push({
           lineNumber: index + 1,
@@ -156,12 +128,12 @@ export const BulkAddCardsModal: React.FC<BulkAddCardsModalProps> = ({
           <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 px-4 py-3 text-sm text-slate-300">
             <p className="font-semibold text-indigo-300">Cách dán nhanh nhất</p>
             <p className="mt-1 text-slate-400">
-              Copy 2 cột từ Excel/Google Sheets rồi dán vào đây. Tab giữa 2 cột sẽ được nhận tự động.
+              Copy 2 cột từ Excel/Google Sheets hoặc dán dạng "Từ (loại từ) [B2] Nghĩa". Chỉ từ/cụm từ đứng trước metadata được đưa lên mặt trước.
             </p>
             <div className="mt-2 rounded-lg bg-slate-950/60 px-3 py-2 font-mono text-xs leading-6 text-slate-400">
               apple&nbsp;&nbsp;&nbsp;&nbsp;quả táo<br />
               take care&nbsp;&nbsp;&nbsp;&nbsp;chăm sóc<br />
-              beautiful&nbsp;&nbsp;&nbsp;&nbsp;xinh đẹp
+              Chronic (adj) [B2]&nbsp;&nbsp;&nbsp;&nbsp;Mạn tính, kéo dài
             </div>
           </div>
 

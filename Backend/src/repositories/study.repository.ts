@@ -24,13 +24,27 @@ class StudyRepository extends BaseRepository<FlashcardSet> {
   }
 
   async listSets(userId?: string) {
-    return this.model.findMany({
+    const sets = await prisma.flashcardSet.findMany({
       where: userId
         ? { OR: [{ isPublic: true }, { userId }] }
         : { isPublic: true },
-      include: { cards: true },
+      select: {
+        id: true,
+        userId: true,
+        title: true,
+        description: true,
+        isPublic: true,
+        createdAt: true,
+        updatedAt: true,
+        _count: { select: { cards: true } },
+      },
       orderBy: { createdAt: "desc" },
     });
+
+    return sets.map(({ _count, ...set }) => ({
+      ...set,
+      cardCount: _count.cards,
+    }));
   }
 
   async searchPublicSets(keyword: string, page: number, limit: number) {

@@ -94,7 +94,7 @@ services:
     volumes:
       - elasticsearch-data:/usr/share/elasticsearch/data
 
-  # 7. Nginx Reverse Proxy + Gzip Compression
+  # 7. Nginx Reverse Proxy
   nginx:
     image: nginx:alpine
     container_name: english-learning-nginx

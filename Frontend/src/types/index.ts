@@ -30,6 +30,18 @@ export interface FlashcardSet {
   cards: Card[];
 }
 
+/** Lightweight representation returned by GET /sets. */
+export interface FlashcardSetSummary {
+  id: string;
+  userId: string;
+  title: string;
+  description?: string | null;
+  isPublic: boolean;
+  createdAt: string;
+  updatedAt: string;
+  cardCount: number;
+}
+
 export interface PublicDeckSearchItem {
   id: string;
   title: string;

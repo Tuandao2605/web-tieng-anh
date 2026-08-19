@@ -403,9 +403,26 @@ export const SetFormEditor: React.FC<SetFormEditorProps> = ({
         onSubmit={handleBulkImport}
       />
 
-      {/* FOOTER ACTIONS */}
-      <div className="flex items-center justify-end gap-4 pt-4 border-t border-slate-800">
-        {onCancel && (
+      {/* Keep the primary save action accessible while editing long card lists. */}
+      <button
+        type="submit"
+        disabled={isLoading}
+        aria-label={isEditing ? 'Cập nhật bộ thẻ' : 'Tạo bộ thẻ mới'}
+        className="fixed bottom-5 right-4 z-40 flex items-center gap-2 rounded-xl border border-indigo-400/30 bg-indigo-600 px-5 py-3.5 text-sm font-extrabold text-white shadow-2xl shadow-indigo-950/60 transition-all hover:-translate-y-0.5 hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:ring-offset-2 focus:ring-offset-slate-950 disabled:pointer-events-none disabled:opacity-60 sm:right-6 sm:px-6"
+      >
+        {isLoading ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <Save className="h-4 w-4" />
+        )}
+        <span>
+          {isLoading ? 'Đang lưu...' : isEditing ? 'Cập nhật bộ thẻ' : 'Tạo bộ thẻ mới'}
+        </span>
+      </button>
+
+      {/* The floating button above is the single save action for long forms. */}
+      {onCancel && (
+        <div className="flex items-center justify-end pt-4 border-t border-slate-800">
           <button
             type="button"
             onClick={onCancel}
@@ -413,21 +430,8 @@ export const SetFormEditor: React.FC<SetFormEditorProps> = ({
           >
             Hủy bỏ
           </button>
-        )}
-
-        <button
-          type="submit"
-          disabled={isLoading}
-          className="flex items-center gap-2 px-8 py-3.5 rounded-xl font-extrabold text-white bg-indigo-600 hover:bg-indigo-500 shadow-xl shadow-indigo-600/30 transition-all disabled:opacity-60 text-sm"
-        >
-          {isLoading ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <Save className="w-4 h-4" />
-          )}
-          <span>{isLoading ? 'Đang lưu...' : isEditing ? 'Cập nhật bộ thẻ' : 'Tạo bộ thẻ mới'}</span>
-        </button>
-      </div>
+        </div>
+      )}
     </form>
   );
 };

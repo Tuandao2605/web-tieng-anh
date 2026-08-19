@@ -5,7 +5,7 @@ import {
   Globe, Lock, ChevronRight, Zap, Award, BarChart2
 } from 'lucide-react';
 import { apiClient } from '../../api/apiClient';
-import type { FlashcardSet } from '../../types';
+import type { FlashcardSetSummary } from '../../types';
 import { useAuthStore } from '../../store/useAuthStore';
 
 const StatCard: React.FC<{ icon: React.ReactNode; label: string; value: string; color: string }> = ({ icon, label, value, color }) => (
@@ -18,7 +18,7 @@ const StatCard: React.FC<{ icon: React.ReactNode; label: string; value: string; 
   </div>
 );
 
-const SetCard: React.FC<{ set: FlashcardSet }> = ({ set }) => (
+const SetCard: React.FC<{ set: FlashcardSetSummary }> = ({ set }) => (
   <div className="glass-card rounded-2xl border border-slate-700/50 overflow-hidden group">
     {/* Color bar */}
     <div className="h-1.5 bg-gradient-to-r from-indigo-500 via-violet-500 to-purple-500" />
@@ -38,7 +38,7 @@ const SetCard: React.FC<{ set: FlashcardSet }> = ({ set }) => (
 
       <div className="flex items-center gap-2 text-xs text-slate-500 mb-4">
         <Layers className="w-3.5 h-3.5" />
-        <span>{set.cards?.length ?? 0} thẻ từ</span>
+        <span>{set.cardCount} thẻ từ</span>
       </div>
 
       {/* Action Links */}
@@ -72,7 +72,7 @@ const SetCard: React.FC<{ set: FlashcardSet }> = ({ set }) => (
 
 export const DashboardPage: React.FC = () => {
   const { user } = useAuthStore();
-  const [sets, setSets] = useState<FlashcardSet[]>([]);
+  const [sets, setSets] = useState<FlashcardSetSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -91,7 +91,7 @@ export const DashboardPage: React.FC = () => {
     fetchSets();
   }, []);
 
-  const totalCards = sets.reduce((acc, s) => acc + (s.cards?.length ?? 0), 0);
+  const totalCards = sets.reduce((acc, set) => acc + set.cardCount, 0);
 
   return (
     <div className="space-y-8">
@@ -181,7 +181,7 @@ export const DashboardPage: React.FC = () => {
                   </div>
                   <div>
                     <p className="text-sm font-semibold text-slate-200 group-hover:text-indigo-300">{set.title}</p>
-                    <p className="text-xs text-slate-500">{set.cards?.length ?? 0} thẻ</p>
+                    <p className="text-xs text-slate-500">{set.cardCount} thẻ</p>
                   </div>
                 </div>
                 <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-indigo-400 transition-colors" />
@@ -193,12 +193,12 @@ export const DashboardPage: React.FC = () => {
     </div>
   );
 };
-let activeSetsRequest: Promise<FlashcardSet[]> | null = null;
+let activeSetsRequest: Promise<FlashcardSetSummary[]> | null = null;
 
 const loadSetsOnce = () => {
   if (!activeSetsRequest) {
     activeSetsRequest = apiClient.get('/sets')
-      .then((data) => Array.isArray(data) ? data : [])
+      .then((data) => Array.isArray(data) ? data as FlashcardSetSummary[] : [])
       .finally(() => { activeSetsRequest = null; });
   }
   return activeSetsRequest;
