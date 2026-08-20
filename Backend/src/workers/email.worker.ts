@@ -2,8 +2,6 @@ import { Worker } from "bullmq";
 import { bullmqClient } from "../utils/bullmq";
 import { JOB_NAME, QUEUE_NAME } from "../constants/queue.constants";
 // const connection = new IORedis({ maxRetriesPerRequest: null });
-const bullmq = bullmqClient.getInstance();
-
 const handleSendEmailWelcome = (data: {
   subject: string;
   message: string;
@@ -43,10 +41,15 @@ export const emailWorker = new Worker(
     }
   },
   {
-    connection: bullmq.worker!,
+    connection: bullmqClient.getWorkerConnection(),
     concurrency: 10,
   },
 );
+
+export const closeEmailWorker = async () => {
+  await emailWorker.close();
+  await bullmqClient.close();
+};
 
 // emailWorker.on("completed", (job) => {
 //   console.log(`${job.id} has completed!`);

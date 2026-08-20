@@ -19,21 +19,39 @@ import {
 // TTL: 60 seconds
 const JWT_CACHE_TTL_MS = 60_000;
 const JWT_CACHE_MAX = 10_000;
-const _jwtCache = new Map<string, { payload: { id: string; email: string; name: string | null; status: boolean }; expiresAt: number }>();
+type AuthenticatedUser = {
+  id: string;
+  email: string;
+  name: string | null;
+  status: boolean;
+};
+type JwtCacheEntry = {
+  payload: AuthenticatedUser;
+  jti: string;
+  expiresAt: number;
+};
+const _jwtCache = new Map<string, JwtCacheEntry>();
 
 function jwtCacheGet(token: string) {
   const entry = _jwtCache.get(token);
   if (!entry) return null;
-  if (Date.now() > entry.expiresAt) { _jwtCache.delete(token); return null; }
-  return entry.payload;
+  if (Date.now() > entry.expiresAt) {
+    _jwtCache.delete(token);
+    return null;
+  }
+  return entry;
 }
 
-function jwtCacheSet(token: string, payload: { id: string; email: string; name: string | null; status: boolean }) {
+function jwtCacheSet(token: string, payload: AuthenticatedUser, jti: string) {
   if (_jwtCache.size >= JWT_CACHE_MAX) {
     const firstKey = _jwtCache.keys().next().value;
     if (firstKey) _jwtCache.delete(firstKey);
   }
-  _jwtCache.set(token, { payload, expiresAt: Date.now() + JWT_CACHE_TTL_MS });
+  _jwtCache.set(token, {
+    payload,
+    jti,
+    expiresAt: Date.now() + JWT_CACHE_TTL_MS,
+  });
 }
 
 function jwtCacheDelete(token: string) {
@@ -49,7 +67,7 @@ export const apiAuthService = {
     });
     if (!user) return false;
     const hash = user.password;
-    if (!verifyPassword(password, hash as string)) {
+    if (!(await verifyPassword(password, hash as string))) {
       return false;
     }
     // Create token
@@ -98,7 +116,11 @@ export const apiAuthService = {
 
     const token = randomBytes(32).toString("hex");
     const tokenHash = createHash("sha256").update(token).digest("hex");
-    await redis.set(`password_reset:${tokenHash}`, JSON.stringify({ userId: user.id }), { EX: 900 });
+    await redis.set(
+      `password_reset:${tokenHash}`,
+      JSON.stringify({ userId: user.id }),
+      { EX: 900 },
+    );
 
     const frontendUrl = process.env.FRONTEND_URL ?? "http://localhost:5500";
     const resetUrl = `${frontendUrl}/reset-password?token=${encodeURIComponent(token)}`;
@@ -114,22 +136,33 @@ export const apiAuthService = {
   resetPassword: async (token: string, password: string) => {
     const tokenHash = createHash("sha256").update(token).digest("hex");
     const resetKey = `password_reset:${tokenHash}`;
-    const raw = await redis.get(resetKey);
+    // Atomically consume the one-time token so concurrent requests cannot both
+    // obtain the reset payload.
+    const raw = await redis.getDel(resetKey);
     if (!raw) return false;
 
-    // Xóa token trước khi ghi để token không thể được dùng lại trong request song song.
-    await redis.del(resetKey);
     const { userId } = JSON.parse(raw) as { userId: string };
-    await prisma.user.update({ where: { id: userId }, data: { password: hashPassword(password) } });
+    const passwordHash = await hashPassword(password);
+    await prisma.user.update({
+      where: { id: userId },
+      data: { password: passwordHash },
+    });
     return true;
   },
   getProfile: async (token: string) => {
     if (!token) return false;
 
-    // 1. FAST PATH (Cache HIT): If this EXACT token string was previously verified, return payload
-    // Speed: ~0.05ms (0 CPU cryptographic cost). Safe: Forged tokens will hit Cache MISS below!
+    // Cache skips repeated HMAC work, but every request still checks the shared
+    // blacklist so revocation is respected across all application instances.
     const cached = jwtCacheGet(token);
-    if (cached) return cached;
+    if (cached) {
+      const isRevoked = await redis.exists(`blacklist_token:${cached.jti}`);
+      if (isRevoked) {
+        jwtCacheDelete(token);
+        return false;
+      }
+      return cached.payload;
+    }
 
     // 2. SLOW PATH (Cache MISS): Mandatory HMAC signature verification with JWT_SECRET
     const decoded = verifyToken(token);
@@ -139,8 +172,8 @@ export const apiAuthService = {
     if (!validJti) return false;
 
     // 3. Check Redis blacklist for revoked tokens
-    const blacklist = await redis.get(`blacklist_token:${validJti}`);
-    if (blacklist) {
+    const isRevoked = await redis.exists(`blacklist_token:${validJti}`);
+    if (isRevoked) {
       return false;
     }
 
@@ -150,7 +183,7 @@ export const apiAuthService = {
     const payload = { id, email, name: name ?? null, status: status ?? true };
 
     // 4. Verification successful -> Store raw token string in memory cache
-    jwtCacheSet(token, payload);
+    jwtCacheSet(token, payload, validJti);
     return payload;
   },
   logout: async (token: string, userId: string) => {

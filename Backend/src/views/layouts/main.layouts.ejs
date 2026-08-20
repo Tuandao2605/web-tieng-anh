@@ -13,7 +13,9 @@
         <% if(user){ %>
             <h2>Hello: <%= user.name %></h2>
             <button class="logout-btn">Log out</button>
-            <form action="/auth/logout" method="post" class="logout-form"></form>
+            <form action="/auth/logout" method="post" class="logout-form">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+            </form>
         <% } else { %>
             <a href="/auth/login">Login</a>
             <a href="/auth/Register">Register</a>
@@ -27,9 +29,11 @@
     <script>
         const logoutBtn = document.querySelector('.logout-btn');
         const logoutForm = document.querySelector('.logout-form');
-        logoutBtn.addEventListener('click', () => {
-            logoutForm.submit();
-        })
+        if (logoutBtn && logoutForm) {
+            logoutBtn.addEventListener('click', () => {
+                logoutForm.submit();
+            })
+        }
     </script>
 </body>
 </html>

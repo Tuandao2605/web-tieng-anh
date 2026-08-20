@@ -1,5 +1,6 @@
 import { WebSocketServer } from "ws";
 import { apiAuthService } from "../services/apiAuth.service";
+import { runtimeConfig } from "../config/runtime";
 const PORT: unknown = process.env.WEBSOCKET_PORT || 8000;
 const wss = new WebSocketServer({
   port: PORT as number,
@@ -17,7 +18,7 @@ const wss = new WebSocketServer({
     callback(true);
   },
 });
-const CLIENT_ORIGIN = "http://127.0.0.1:5500";
+const allowedOrigins = new Set(runtimeConfig.allowedOrigins);
 
 wss.on("connection", function connection(ws, req) {
   console.log("Client da ket noi");
@@ -26,8 +27,9 @@ wss.on("connection", function connection(ws, req) {
   // const parsed = url.parse(req.url as string, true);
   // console.log(parsed.query.id);
   const origin = req.headers["origin"];
-  if (!origin?.includes(CLIENT_ORIGIN)) {
+  if (!origin || !allowedOrigins.has(origin)) {
     ws.close(1008, "Origin not allowed");
+    return;
   }
   ws.on("error", console.error);
 

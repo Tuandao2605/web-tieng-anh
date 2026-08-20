@@ -12,7 +12,7 @@ export const TTL = {
 //Quan ly key va tag
 export const CACHE = {
   USER: {
-    _VER: "v1",
+    _VER: "v2",
     KEYS: {
       LIST: (
         listVersion: number,

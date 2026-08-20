@@ -5,6 +5,7 @@ import { apiClient } from '../api/apiClient';
 interface AuthState {
   user: User | null;
   isAuthenticated: boolean;
+  isInitialized: boolean;
   isLoading: boolean;
   error: string | null;
 
@@ -15,9 +16,14 @@ interface AuthState {
   clearError: () => void;
 }
 
+const hasStoredAccessToken = Boolean(localStorage.getItem('accessToken'));
+let activeProfileRequest: Promise<void> | null = null;
+
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
-  isAuthenticated: !!localStorage.getItem('accessToken'),
+  isAuthenticated: hasStoredAccessToken,
+  // A stored token must be verified/refreshed before protected pages mount.
+  isInitialized: !hasStoredAccessToken,
   isLoading: false,
   error: null,
 
@@ -32,7 +38,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       
       // Fetch user profile immediately after login
       const profile: User = await apiClient.get('/auth/me');
-      set({ user: profile });
+      set({ user: profile, isInitialized: true });
     } catch (err: any) {
       set({ error: err.message || 'Đăng nhập thất bại', isLoading: false });
       throw err;
@@ -60,21 +66,42 @@ export const useAuthStore = create<AuthState>((set) => ({
     } finally {
       localStorage.removeItem('accessToken');
       localStorage.removeItem('refreshToken');
-      set({ user: null, isAuthenticated: false, isLoading: false });
+      set({ user: null, isAuthenticated: false, isInitialized: true, isLoading: false });
     }
   },
 
-  fetchProfile: async () => {
-    if (!localStorage.getItem('accessToken')) return;
-    set({ isLoading: true });
-    try {
-      const profile: User = await apiClient.get('/auth/me');
-      set({ user: profile, isAuthenticated: true, isLoading: false });
-    } catch (err) {
-      localStorage.removeItem('accessToken');
-      localStorage.removeItem('refreshToken');
-      set({ user: null, isAuthenticated: false, isLoading: false });
+  fetchProfile: () => {
+    if (activeProfileRequest) return activeProfileRequest;
+    if (!localStorage.getItem('accessToken')) {
+      set({ user: null, isAuthenticated: false, isInitialized: true, isLoading: false });
+      return Promise.resolve();
     }
+
+    set({ isLoading: true });
+    activeProfileRequest = apiClient
+      .get('/auth/me')
+      .then((profile) => {
+        set({
+          user: profile as unknown as User,
+          isAuthenticated: true,
+          isInitialized: true,
+          isLoading: false,
+        });
+      })
+      .catch(() => {
+        localStorage.removeItem('accessToken');
+        localStorage.removeItem('refreshToken');
+        set({
+          user: null,
+          isAuthenticated: false,
+          isInitialized: true,
+          isLoading: false,
+        });
+      })
+      .finally(() => {
+        activeProfileRequest = null;
+      });
+    return activeProfileRequest;
   },
 
   clearError: () => set({ error: null }),
@@ -83,6 +110,11 @@ export const useAuthStore = create<AuthState>((set) => ({
 // Global listener for automatic logout on 401 token refresh failure
 if (typeof window !== 'undefined') {
   window.addEventListener('auth:logout', () => {
-    useAuthStore.setState({ user: null, isAuthenticated: false });
+    useAuthStore.setState({
+      user: null,
+      isAuthenticated: false,
+      isInitialized: true,
+      isLoading: false,
+    });
   });
 }

@@ -12,6 +12,7 @@ export const authMiddleware = async (
     if (!isAuth) {
       return res.redirect("/auth/login");
     }
+    return next();
   }
 
   //Xu li API

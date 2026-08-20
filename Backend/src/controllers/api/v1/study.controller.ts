@@ -7,13 +7,24 @@ export class StudyController {
   async searchPublicDecks(req: Request, res: Response) {
     try {
       const { q, page, limit } = req.query as unknown as {
-        q: string; page: number; limit: number;
+        q: string;
+        page: number;
+        limit: number;
       };
       const result = await studyService.searchPublicDecks(q, page, limit);
-      return successResponse(res, result, "Public decks retrieved successfully");
+      return successResponse(
+        res,
+        result,
+        "Public decks retrieved successfully",
+      );
     } catch (error: any) {
       const status = error instanceof UpdatedError ? error.status : 500;
-      return errorResponse(res, error.message || "Failed to search public decks", error, status);
+      return errorResponse(
+        res,
+        error.message || "Failed to search public decks",
+        error,
+        status,
+      );
     }
   }
 
@@ -23,10 +34,18 @@ export class StudyController {
     try {
       const userId = (req.user as any)?.id as string | undefined;
       const rawJson = await studyService.listSetsRaw(userId);
-      return res.setHeader("Content-Type", "application/json").status(200).send(rawJson);
+      return res
+        .setHeader("Content-Type", "application/json")
+        .status(200)
+        .send(rawJson);
     } catch (error: any) {
       const status = error instanceof UpdatedError ? error.status : 500;
-      return errorResponse(res, error.message || "Failed to retrieve flashcard sets", error, status);
+      return errorResponse(
+        res,
+        error.message || "Failed to retrieve flashcard sets",
+        error,
+        status,
+      );
     }
   }
 
@@ -38,10 +57,20 @@ export class StudyController {
       if (!userId) return errorResponse(res, "Unauthorized", {}, 401);
 
       const newSet = await studyService.createSet({ userId, ...req.body });
-      return successResponse(res, newSet, "Flashcard set created successfully", 201);
+      return successResponse(
+        res,
+        newSet,
+        "Flashcard set created successfully",
+        201,
+      );
     } catch (error: any) {
       const status = error instanceof UpdatedError ? error.status : 500;
-      return errorResponse(res, error.message || "Failed to create flashcard set", error, status);
+      return errorResponse(
+        res,
+        error.message || "Failed to create flashcard set",
+        error,
+        status,
+      );
     }
   }
 
@@ -49,11 +78,19 @@ export class StudyController {
 
   async getSet(req: Request, res: Response) {
     try {
-      const set = await studyService.getSetById(req.params.id as string);
+      const set = await studyService.getSetById(
+        req.params.id as string,
+        req.user?.id,
+      );
       return successResponse(res, set, "Flashcard set retrieved successfully");
     } catch (error: any) {
       const status = error instanceof UpdatedError ? error.status : 404;
-      return errorResponse(res, error.message || "Flashcard set not found", error, status);
+      return errorResponse(
+        res,
+        error.message || "Flashcard set not found",
+        error,
+        status,
+      );
     }
   }
 
@@ -61,14 +98,27 @@ export class StudyController {
 
   async updateSet(req: Request, res: Response) {
     try {
-      const userId = (req.user as any)?.id;
+      const userId = req.user?.id;
       if (!userId) return errorResponse(res, "Unauthorized", {}, 401);
 
-      const updated = await studyService.updateSet(req.params.id as string, req.body);
-      return successResponse(res, updated, "Flashcard set updated successfully");
+      const updated = await studyService.updateSet(
+        req.params.id as string,
+        userId,
+        req.body,
+      );
+      return successResponse(
+        res,
+        updated,
+        "Flashcard set updated successfully",
+      );
     } catch (error: any) {
       const status = error instanceof UpdatedError ? error.status : 500;
-      return errorResponse(res, error.message || "Failed to update flashcard set", error, status);
+      return errorResponse(
+        res,
+        error.message || "Failed to update flashcard set",
+        error,
+        status,
+      );
     }
   }
 
@@ -76,14 +126,23 @@ export class StudyController {
 
   async addCardsToSet(req: Request, res: Response) {
     try {
-      const userId = (req.user as any)?.id;
+      const userId = req.user?.id;
       if (!userId) return errorResponse(res, "Unauthorized", {}, 401);
 
-      const updated = await studyService.addCardsToSet(req.params.id as string, req.body.cards);
+      const updated = await studyService.addCardsToSet(
+        req.params.id as string,
+        userId,
+        req.body.cards,
+      );
       return successResponse(res, updated, "Cards added successfully", 201);
     } catch (error: any) {
       const status = error instanceof UpdatedError ? error.status : 500;
-      return errorResponse(res, error.message || "Failed to add cards", error, status);
+      return errorResponse(
+        res,
+        error.message || "Failed to add cards",
+        error,
+        status,
+      );
     }
   }
 
@@ -92,17 +151,28 @@ export class StudyController {
   async generateQuiz(req: Request, res: Response) {
     try {
       const setId = req.params.id as string;
-      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 10;
-      const questions = await studyService.generateQuiz(setId, limit);
+      const limit = req.query.limit
+        ? parseInt(req.query.limit as string, 10)
+        : 10;
+      const questions = await studyService.generateQuiz(
+        setId,
+        limit,
+        req.user?.id,
+      );
 
       return successResponse(
         res,
         { setId, questionCount: questions.length, questions },
-        "Quiz generated successfully"
+        "Quiz generated successfully",
       );
     } catch (error: any) {
       const status = error instanceof UpdatedError ? error.status : 500;
-      return errorResponse(res, error.message || "Failed to generate quiz", error, status);
+      return errorResponse(
+        res,
+        error.message || "Failed to generate quiz",
+        error,
+        status,
+      );
     }
   }
 
@@ -126,7 +196,12 @@ export class StudyController {
       return successResponse(res, result, "Answer recorded successfully");
     } catch (error: any) {
       const status = error instanceof UpdatedError ? error.status : 500;
-      return errorResponse(res, error.message || "Failed to record answer", error, status);
+      return errorResponse(
+        res,
+        error.message || "Failed to record answer",
+        error,
+        status,
+      );
     }
   }
 
@@ -138,12 +213,21 @@ export class StudyController {
 
       const { sessionId, setId, mode, answers } = req.body;
       const results = await studyService.submitAnswers({
-        userId, sessionId, setId, mode, answers,
+        userId,
+        sessionId,
+        setId,
+        mode,
+        answers,
       });
       return successResponse(res, results, "Answers recorded successfully");
     } catch (error: any) {
       const status = error instanceof UpdatedError ? error.status : 500;
-      return errorResponse(res, error.message || "Failed to record answers", error, status);
+      return errorResponse(
+        res,
+        error.message || "Failed to record answers",
+        error,
+        status,
+      );
     }
   }
 
@@ -160,11 +244,16 @@ export class StudyController {
       return successResponse(
         res,
         syncedSession,
-        "Study session progress synced to database successfully"
+        "Study session progress synced to database successfully",
       );
     } catch (error: any) {
       const status = error instanceof UpdatedError ? error.status : 500;
-      return errorResponse(res, error.message || "Failed to sync study progress", error, status);
+      return errorResponse(
+        res,
+        error.message || "Failed to sync study progress",
+        error,
+        status,
+      );
     }
   }
 }

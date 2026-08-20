@@ -1,11 +1,11 @@
 declare module "express-session" {
   interface SessionData {
-    user: {
+    user?: {
       id: string;
       name: string | null;
       email: string;
-      password: string | null;
     };
+    csrfToken?: string;
   }
 }
 

@@ -73,13 +73,16 @@ class StudyRepository extends BaseRepository<FlashcardSet> {
     const authorIds: string[] = Array.from(
       new Set<string>(decks.map((deck: { userId: string }) => deck.userId)),
     );
-    const authors = authorIds.length > 0
-      ? await prisma.user.findMany({
-          where: { id: { in: authorIds } },
-          select: { id: true, name: true },
-        })
-      : [];
-    const authorById = new Map(authors.map((author) => [author.id, author.name]));
+    const authors =
+      authorIds.length > 0
+        ? await prisma.user.findMany({
+            where: { id: { in: authorIds } },
+            select: { id: true, name: true },
+          })
+        : [];
+    const authorById = new Map(
+      authors.map((author) => [author.id, author.name]),
+    );
 
     return {
       decks: decks.map((deck: any) => ({
@@ -118,14 +121,16 @@ class StudyRepository extends BaseRepository<FlashcardSet> {
     });
   }
 
-  async updateSet(setId: string, input: UpdateSetInput) {
+  async updateSet(setId: string, userId: string, input: UpdateSetInput) {
     return prisma.$transaction(async (tx) => {
       const existingSet = await tx.flashcardSet.findUnique({
         where: { id: setId },
-        select: { id: true },
+        select: { id: true, userId: true },
       });
-      if (!existingSet) {
-        const error = new Error("Flashcard set not found") as Error & { code: string };
+      if (!existingSet || existingSet.userId !== userId) {
+        const error = new Error("Flashcard set not found") as Error & {
+          code: string;
+        };
         error.code = "P2025";
         throw error;
       }
@@ -134,7 +139,9 @@ class StudyRepository extends BaseRepository<FlashcardSet> {
         where: { id: setId },
         data: {
           ...(input.title !== undefined ? { title: input.title } : {}),
-          ...(input.description !== undefined ? { description: input.description } : {}),
+          ...(input.description !== undefined
+            ? { description: input.description }
+            : {}),
           ...(input.isPublic !== undefined ? { isPublic: input.isPublic } : {}),
         },
       });
@@ -151,10 +158,14 @@ class StudyRepository extends BaseRepository<FlashcardSet> {
           (card) => !existingIds.has(card.id as string),
         );
         if (foreignCard) {
-          throw new Error("A submitted card does not belong to this flashcard set");
+          throw new Error(
+            "A submitted card does not belong to this flashcard set",
+          );
         }
 
-        const retainedIds = submittedExistingCards.map((card) => card.id as string);
+        const retainedIds = submittedExistingCards.map(
+          (card) => card.id as string,
+        );
         await tx.card.deleteMany({
           where: {
             setId,
@@ -198,21 +209,35 @@ class StudyRepository extends BaseRepository<FlashcardSet> {
     });
   }
 
-  async addCardsToSet(setId: string, cards: CreateCardInput[]) {
-    return this.model.update({
-      where: { id: setId },
-      data: {
-        cards: {
-          create: cards.map((card) => ({
-            term: card.term,
-            definition: card.definition,
-            audioUrl: card.audioUrl,
-            exampleSentence: card.exampleSentence,
-            imageUrl: card.imageUrl,
-          })),
+  async addCardsToSet(setId: string, userId: string, cards: CreateCardInput[]) {
+    return prisma.$transaction(async (tx) => {
+      const existingSet = await tx.flashcardSet.findUnique({
+        where: { id: setId },
+        select: { userId: true },
+      });
+      if (!existingSet || existingSet.userId !== userId) {
+        const error = new Error("Flashcard set not found") as Error & {
+          code: string;
+        };
+        error.code = "P2025";
+        throw error;
+      }
+
+      return tx.flashcardSet.update({
+        where: { id: setId },
+        data: {
+          cards: {
+            create: cards.map((card) => ({
+              term: card.term,
+              definition: card.definition,
+              audioUrl: card.audioUrl ?? null,
+              exampleSentence: card.exampleSentence ?? null,
+              imageUrl: card.imageUrl ?? null,
+            })),
+          },
         },
-      },
-      include: { cards: true },
+        include: { cards: true },
+      });
     });
   }
 

@@ -1,40 +1,77 @@
-import dotenv from "dotenv";
-dotenv.config();
+import { runtimeConfig } from "./config/runtime";
 import express, { Application } from "express";
 import path from "node:path";
 import expressLayouts from "express-ejs-layouts";
 import morgan from "morgan";
-import "./scheduler";
 import "./subscribers/order";
-import "./web-socket/socket-server";
 // import "./consumer";
 import cors, { CorsOptions } from "cors";
 import routerWeb from "./routes/web";
 import routerApi from "./routes/api";
 import session from "express-session";
+import { RedisStore } from "connect-redis";
 import flash from "connect-flash";
 import {
   errorHandlingMiddleware,
   notFoundMiddleware,
 } from "./middlewares/error.middleware";
+import { closeRedisConnections, redisClient } from "./utils/redis";
+import { prisma } from "./libs/prisma";
+import { closeBullMqConnections } from "./utils/bullmq";
+import { startSchedulers, stopSchedulers } from "./scheduler";
+import { closeSocketServer } from "./web-socket/socket-server";
+import { csrfProtection } from "./middlewares/csrf.middleware";
 
 const app: Application = express();
-const port: number = 3000;
+const {
+  isProduction,
+  port,
+  sessionSecret,
+  sessionCookieName,
+  sessionTtlMs,
+} = runtimeConfig;
+
+const trustProxy = process.env.TRUST_PROXY?.trim();
+if (trustProxy && trustProxy !== "false") {
+  if (trustProxy === "true") {
+    throw new Error(
+      "TRUST_PROXY=true trusts every proxy. Configure trusted IPs/CIDRs or a fixed hop count instead.",
+    );
+  }
+
+  const trustProxySetting = /^\d+$/.test(trustProxy)
+    ? Number(trustProxy)
+    : trustProxy.split(",").map((entry) => entry.trim());
+  app.set("trust proxy", trustProxySetting);
+}
 
 if (process.env.NODE_ENV === "development") {
   app.use(morgan("tiny"));
 }
-app.use(express.json());
-app.use(express.urlencoded());
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: false, limit: "1mb" }));
 app.use(expressLayouts);
 app.use(express.static("public"));
 
-app.set("trust proxy", 1); // trust first proxy
 const webSessionMiddleware = session({
-  secret: process.env.SESSION_SECRET ?? "local-development-session-secret",
+  name: sessionCookieName,
+  store: new RedisStore({
+    client: redisClient.getInstance(),
+    prefix: "session:web:",
+    ttl: Math.ceil(sessionTtlMs / 1000),
+  }),
+  secret: sessionSecret,
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: false },
+  rolling: true,
+  unset: "destroy",
+  cookie: {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: isProduction,
+    maxAge: sessionTtlMs,
+    priority: "high",
+  },
 });
 
 app.set("layout", "layouts/main.layouts.ejs");
@@ -43,17 +80,16 @@ app.set("layout extractStyles", true);
 app.set("view engine", "ejs");
 app.set("views", path.join(__dirname, "views"));
 
-const frontendOrigin = [
-  "http://localhost:5500",
-  "http://127.0.0.1:5500",
-  "http://localhost:3000", // Vite proxy same-origin
-];
+const allowedOrigins = new Set(runtimeConfig.allowedOrigins);
 
 // Cors
 const corsOptions: CorsOptions = {
-  origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+  origin: (
+    origin: string | undefined,
+    callback: (err: Error | null, allow?: boolean) => void,
+  ) => {
     // Cho phép: request không có origin (curl, server-to-server) hoặc nằm trong whitelist
-    if (!origin || frontendOrigin.includes(origin)) {
+    if (!origin || allowedOrigins.has(origin)) {
       callback(null, true);
     } else {
       callback(new Error(`Disallow by cors: ${origin}`));
@@ -73,12 +109,70 @@ app.use("/api", cors(corsOptions), routerApi);
 // Session and flash are only needed by the server-rendered web routes.
 app.use(webSessionMiddleware);
 app.use(flash());
+app.use(csrfProtection);
 //Route
 app.use(routerWeb);
 
 app.use(notFoundMiddleware);
 app.use(errorHandlingMiddleware);
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
+  // eslint-disable-next-line no-console
   console.log(`Khoi dong server tai: http://localhost:${port}`);
 });
+
+void startSchedulers().catch((error: unknown) => {
+  // eslint-disable-next-line no-console
+  console.error("Unable to start schedulers", error);
+});
+
+let isShuttingDown = false;
+const shutdown = async (signal: NodeJS.Signals) => {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  // eslint-disable-next-line no-console
+  console.log(`Received ${signal}; shutting down gracefully`);
+  const forceExitTimer = setTimeout(() => {
+    // eslint-disable-next-line no-console
+    console.error("Graceful shutdown timed out; forcing exit");
+    process.exit(1);
+  }, 15_000);
+  forceExitTimer.unref();
+
+  const closeHttpServer = new Promise<void>((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+
+  const drainResults = await Promise.allSettled([
+    closeHttpServer,
+    closeSocketServer(),
+  ]);
+
+  // Request handlers no longer need shared resources after HTTP has drained.
+  const resourceResults = await Promise.allSettled([
+    stopSchedulers(),
+    prisma.$disconnect(),
+  ]);
+  const bullMqResult = await Promise.allSettled([closeBullMqConnections()]);
+  const redisResult = await Promise.allSettled([closeRedisConnections()]);
+
+  clearTimeout(forceExitTimer);
+  const failed = [
+    ...drainResults,
+    ...resourceResults,
+    ...bullMqResult,
+    ...redisResult,
+  ].filter((result) => result.status === "rejected");
+
+  for (const failure of failed) {
+    if (failure.status === "rejected") {
+      // eslint-disable-next-line no-console
+      console.error("Resource failed to close cleanly", failure.reason);
+    }
+  }
+  process.exit(failed.length > 0 ? 1 : 0);
+};
+
+process.once("SIGTERM", () => void shutdown("SIGTERM"));
+process.once("SIGINT", () => void shutdown("SIGINT"));

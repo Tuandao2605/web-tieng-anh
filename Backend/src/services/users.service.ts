@@ -124,6 +124,7 @@ export const usersService = {
         () =>
           prisma.user.findUnique({
             where: { id },
+            omit: { password: true },
             include: includeRelations,
           }),
         CACHE.USER.TAGS.DETAIL(id),
@@ -139,9 +140,10 @@ export const usersService = {
     password: string;
   }) {
     const { phone, ...userData } = data;
+    const password = await hashPassword(data.password);
     const dataInsert: Prisma.UserCreateInput = {
       ...userData,
-      password: hashPassword(data.password),
+      password,
     };
     if (phone) {
       dataInsert.phone = {
@@ -160,6 +162,9 @@ export const usersService = {
 
     const user = await prisma.user.create({
       data: dataInsert,
+      omit: {
+        password: true,
+      },
       include: {
         phone: true,
       },
@@ -171,15 +176,23 @@ export const usersService = {
     return null;
   },
   async updateUser(
-    data: { name?: string; email?: string; phone?: string },
+    data: {
+      name?: string;
+      email?: string;
+      password?: string;
+      phone?: string;
+    },
     id: string,
   ) {
     try {
-      const { phone, ...userData } = data;
+      const { phone, password, ...userData } = data;
 
       const dataUpdate: Prisma.UserUpdateInput = {
         ...userData,
       };
+      if (password) {
+        dataUpdate.password = await hashPassword(password);
+      }
       if (phone) {
         dataUpdate.phone = {
           upsert: {
@@ -235,6 +248,9 @@ export const usersService = {
     if (deletePhone) {
       const user = await prisma.user.delete({
         where: { id },
+        omit: {
+          password: true,
+        },
       });
       if (user) {
         //invalidate

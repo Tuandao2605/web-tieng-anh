@@ -1,9 +1,16 @@
 import { Server, Socket } from "socket.io";
-const io = new Server(8000, {
+import { runtimeConfig } from "../config/runtime";
+
+const io = new Server(Number(process.env.WEBSOCKET_PORT) || 8000, {
   cors: {
-    origin: "*",
+    origin: runtimeConfig.allowedOrigins,
   },
 });
+
+export const closeSocketServer = () =>
+  new Promise<void>((resolve) => {
+    io.close(() => resolve());
+  });
 //Middleware
 // io.use((socket, next) => {
 //   console.log("Socket middleware");

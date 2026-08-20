@@ -77,12 +77,24 @@ export class StudyService {
     const normalizedKeyword = keyword.trim();
     let result;
     try {
-      result = await elasticsearchService.searchPublicDecks(normalizedKeyword, page, limit);
+      result = await elasticsearchService.searchPublicDecks(
+        normalizedKeyword,
+        page,
+        limit,
+      );
     } catch (error) {
       if (process.env.ELASTICSEARCH_FALLBACK_TO_MONGO !== "true") {
-        throw new UpdatedError("Search service is temporarily unavailable", 503, error);
+        throw new UpdatedError(
+          "Search service is temporarily unavailable",
+          503,
+          error,
+        );
       }
-      result = await studyRepository.searchPublicSets(normalizedKeyword, page, limit);
+      result = await studyRepository.searchPublicSets(
+        normalizedKeyword,
+        page,
+        limit,
+      );
     }
     return {
       decks: result.decks.map((deck: any) => ({
@@ -115,9 +127,9 @@ export class StudyService {
 
   // ── 3. Update Set ───────────────────────────────────────────────────────────
 
-  async updateSet(setId: string, input: UpdateSetInput) {
+  async updateSet(setId: string, userId: string, input: UpdateSetInput) {
     const updated = await studyRepository
-      .updateSet(setId, input)
+      .updateSet(setId, userId, input)
       .catch((err: any) => {
         if (err?.code === "P2025")
           throw new UpdatedError("Flashcard set not found", 404, err);
@@ -136,9 +148,9 @@ export class StudyService {
 
   // ── 4. Add Cards to Set ─────────────────────────────────────────────────────
 
-  async addCardsToSet(setId: string, cards: CreateCardInput[]) {
+  async addCardsToSet(setId: string, userId: string, cards: CreateCardInput[]) {
     const updated = await studyRepository
-      .addCardsToSet(setId, cards)
+      .addCardsToSet(setId, userId, cards)
       .catch((err: any) => {
         if (err?.code === "P2025")
           throw new UpdatedError("Flashcard set not found", 404, err);
@@ -157,8 +169,8 @@ export class StudyService {
 
   // ── 5. Get Set by ID (Cache-Aside, TTL 1h) ──────────────────────────────────
 
-  async getSetById(setId: string) {
-    return cacheService.getOrSetWithTag(
+  async getSetById(setId: string, userId?: string) {
+    const set = await cacheService.getOrSetWithTag(
       `set:${setId}:cards`,
       async () => {
         const set = await studyRepository.findSetById(setId);
@@ -168,6 +180,13 @@ export class StudyService {
       ["sets", `set:${setId}`],
       3600,
     );
+
+    if (!set.isPublic && set.userId !== userId) {
+      // Do not reveal whether a private deck exists.
+      throw new UpdatedError("Flashcard set not found", 404);
+    }
+
+    return set;
   }
 
   // ── 6. Generate Multiple-Choice Quiz ────────────────────────────────────────
@@ -175,8 +194,9 @@ export class StudyService {
   async generateQuiz(
     setId: string,
     limit: number = 10,
+    userId?: string,
   ): Promise<QuizQuestion[]> {
-    const set: any = await this.getSetById(setId);
+    const set: any = await this.getSetById(setId, userId);
     if (!set?.cards?.length) {
       throw new UpdatedError("Set has no cards to generate quiz", 422);
     }
@@ -197,7 +217,10 @@ export class StudyService {
 
       const options = [
         { definition: card.definition, isCorrect: true },
-        ...distractors.map((d) => ({ definition: d.definition, isCorrect: false })),
+        ...distractors.map((d) => ({
+          definition: d.definition,
+          isCorrect: false,
+        })),
       ].sort(() => 0.5 - Math.random());
 
       return {
@@ -226,8 +249,14 @@ export class StudyService {
     const sessionState: SessionProgressState = rawSession
       ? JSON.parse(rawSession)
       : {
-          sessionId, userId, setId, mode, totalCards: 0,
-          correctCount: 0, wrongCount: 0, cardProgressMap: {},
+          sessionId,
+          userId,
+          setId,
+          mode,
+          totalCards: 0,
+          correctCount: 0,
+          wrongCount: 0,
+          cardProgressMap: {},
         };
 
     sessionState.setId = setId;
@@ -238,8 +267,13 @@ export class StudyService {
 
       const now = new Date();
       const previous = sessionState.cardProgressMap[cardId] ?? {
-        cardId, streak: 0, correctCount: 0, wrongCount: 0, status: "NEW" as CardStatus,
-        nextReviewAt: now.toISOString(), lastReviewedAt: now.toISOString(),
+        cardId,
+        streak: 0,
+        correctCount: 0,
+        wrongCount: 0,
+        status: "NEW" as CardStatus,
+        nextReviewAt: now.toISOString(),
+        lastReviewedAt: now.toISOString(),
       };
       if (isCorrect) {
         previous.correctCount += 1;
@@ -255,7 +289,10 @@ export class StudyService {
       sessionState.cardProgressMap[cardId] = previous;
 
       return {
-        sessionId, cardId, isCorrect, cardProgress: previous,
+        sessionId,
+        cardId,
+        isCorrect,
+        cardProgress: previous,
         sessionSummary: {
           correctCount: sessionState.correctCount,
           wrongCount: sessionState.wrongCount,
@@ -263,7 +300,9 @@ export class StudyService {
       };
     });
 
-    await this.redis.set(sessionKey, JSON.stringify(sessionState), { EX: 86400 });
+    await this.redis.set(sessionKey, JSON.stringify(sessionState), {
+      EX: 86400,
+    });
     return results;
   }
 

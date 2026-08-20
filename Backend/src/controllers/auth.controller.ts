@@ -1,6 +1,7 @@
-import { Request, Response } from "express";
+import { NextFunction, Request, Response } from "express";
 import { authService } from "../services/auth.service";
 import moment from "moment";
+import { runtimeConfig } from "../config/runtime";
 
 export const authController = {
   login: (req: Request, res: Response) => {
@@ -50,8 +51,11 @@ export const authController = {
       moment,
     });
   },
-  logout: (req: Request, res: Response) => {
-    delete req.session.user;
-    return res.redirect("/auth/login");
+  logout: (req: Request, res: Response, next: NextFunction) => {
+    req.session.destroy((error) => {
+      if (error) return next(error);
+      res.clearCookie(runtimeConfig.sessionCookieName);
+      return res.redirect("/auth/login");
+    });
   },
 };

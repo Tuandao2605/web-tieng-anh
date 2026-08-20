@@ -46,8 +46,6 @@ export function useFlashcardSet(setId: string | undefined) {
     enabled: Boolean(setId),
     staleTime: 1000 * 60 * 5, // 5 minutes
     gcTime: 1000 * 60 * 15,    // 15 minutes
-    retry: 2,
-    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 10000),
   });
 }
 

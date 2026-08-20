@@ -12,13 +12,15 @@ import { LearnModePage } from './pages/Study/LearnModePage';
 import { QuizModePage } from './pages/Study/QuizModePage';
 import { WriteModePage } from './pages/Study/WriteModePage';
 import { SetCreatorPage } from './pages/Study/SetCreatorPage';
+import { queryRetryDelay, shouldRetryQuery } from './api/apiClient';
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 1000 * 60 * 5, // 5 minutes
       gcTime: 1000 * 60 * 15,    // 15 minutes
-      retry: 2,
+      retry: shouldRetryQuery,
+      retryDelay: queryRetryDelay,
       refetchOnWindowFocus: false,
     },
   },

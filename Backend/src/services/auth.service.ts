@@ -5,10 +5,11 @@ import { hashPassword, verifyPassword } from "../utils/hash";
 
 export const authService = {
   register: async (data: RegisterData) => {
+    const password = await hashPassword(data.password);
     return await prisma.user.create({
       data: {
         ...data,
-        password: hashPassword(data.password),
+        password,
       },
     });
   },
@@ -27,10 +28,20 @@ export const authService = {
     });
     if (!user) return false;
     const hash = user.password;
-    if (!verifyPassword(password, hash as string)) {
+    if (!(await verifyPassword(password, hash as string))) {
       return false;
     }
-    req.session.user = user;
+    await new Promise<void>((resolve, reject) => {
+      req.session.regenerate((error) => (error ? reject(error) : resolve()));
+    });
+    req.session.user = {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+    };
+    await new Promise<void>((resolve, reject) => {
+      req.session.save((error) => (error ? reject(error) : resolve()));
+    });
     return true;
   },
   profile: async (id: string) => {

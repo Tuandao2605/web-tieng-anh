@@ -12,6 +12,40 @@ export const apiClient = axios.create({
   withCredentials: true,
 });
 
+export class ApiClientError extends Error {
+  status?: number;
+  retryAfterMs?: number;
+
+  constructor(message: string, status?: number, retryAfterMs?: number) {
+    super(message);
+    this.name = 'ApiClientError';
+    if (status !== undefined) this.status = status;
+    if (retryAfterMs !== undefined) this.retryAfterMs = retryAfterMs;
+  }
+}
+
+const parseRetryAfterMs = (value: unknown) => {
+  if (typeof value !== 'string' && typeof value !== 'number') return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+
+  const retryAt = Date.parse(String(value));
+  return Number.isFinite(retryAt) ? Math.max(0, retryAt - Date.now()) : undefined;
+};
+
+// Queries retry only transient failures. In particular, 429 is not retried
+// automatically: retrying it would add traffic while the bucket is exhausted.
+export const shouldRetryQuery = (failureCount: number, error: Error) => {
+  if (failureCount >= 2) return false;
+  if (!(error instanceof ApiClientError) || error.status === undefined) return true;
+  return error.status === 408 || error.status >= 500;
+};
+
+export const queryRetryDelay = (attemptIndex: number) => {
+  const exponentialDelay = Math.min(1000 * 2 ** attemptIndex, 10000);
+  return Math.floor(exponentialDelay * (0.8 + Math.random() * 0.4));
+};
+
 let isRefreshing = false;
 let failedQueue: Array<{
   resolve: (value?: unknown) => void;
@@ -120,6 +154,12 @@ apiClient.interceptors.response.use(
       error.message ||
       'An error occurred';
       
-    return Promise.reject(new Error(message));
+    return Promise.reject(
+      new ApiClientError(
+        message,
+        error.response?.status,
+        parseRetryAfterMs(error.response?.headers?.['retry-after']),
+      ),
+    );
   }
 );
