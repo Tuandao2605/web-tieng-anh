@@ -1,6 +1,7 @@
 import { redisClient } from "../utils/redis";
 import { cacheService } from "./cache.service";
-import { UpdatedError } from "../errors/app.error";
+import { hasErrorCode, UpdatedError } from "../errors/app.error";
+import type { Card } from "../generated/prisma/client";
 import studyRepository, {
   CreateSetInput,
   UpdateSetInput,
@@ -97,12 +98,15 @@ export class StudyService {
       );
     }
     return {
-      decks: result.decks.map((deck: any) => ({
+      decks: result.decks.map((deck) => ({
         id: deck.id,
         title: deck.title,
         description: deck.description,
         cardCount: deck.cardCount,
-        author: deck.author ?? { id: deck.userId, name: deck.authorName },
+        author:
+          "author" in deck
+            ? deck.author
+            : { id: deck.userId, name: deck.authorName },
         updatedAt: deck.updatedAt,
       })),
       pagination: {
@@ -130,10 +134,10 @@ export class StudyService {
   async updateSet(setId: string, userId: string, input: UpdateSetInput) {
     const updated = await studyRepository
       .updateSet(setId, userId, input)
-      .catch((err: any) => {
-        if (err?.code === "P2025")
-          throw new UpdatedError("Flashcard set not found", 404, err);
-        throw new UpdatedError("Failed to update flashcard set", 500, err);
+      .catch((error: unknown) => {
+        if (hasErrorCode(error, "P2025"))
+          throw new UpdatedError("Flashcard set not found", 404, error);
+        throw new UpdatedError("Failed to update flashcard set", 500, error);
       });
 
     await Promise.all([
@@ -148,13 +152,33 @@ export class StudyService {
 
   // ── 4. Add Cards to Set ─────────────────────────────────────────────────────
 
+  async deleteSet(setId: string, userId: string) {
+    const deleted = await studyRepository
+      .deleteSet(setId, userId)
+      .catch((error: unknown) => {
+        if (hasErrorCode(error, "P2025")) {
+          throw new UpdatedError("Flashcard set not found", 404, error);
+        }
+        throw new UpdatedError("Failed to delete flashcard set", 500, error);
+      });
+
+    // Public sets also appear in authenticated dashboards, so invalidate the
+    // entire sets namespace instead of leaving another user's list stale.
+    await cacheService.invalidateTag(["sets"]);
+    await elasticsearchService.syncDeck(setId).catch((error) => {
+      console.warn("Unable to remove deleted deck from Elasticsearch", error);
+    });
+
+    return deleted;
+  }
+
   async addCardsToSet(setId: string, userId: string, cards: CreateCardInput[]) {
     const updated = await studyRepository
       .addCardsToSet(setId, userId, cards)
-      .catch((err: any) => {
-        if (err?.code === "P2025")
-          throw new UpdatedError("Flashcard set not found", 404, err);
-        throw new UpdatedError("Failed to add cards", 500, err);
+      .catch((error: unknown) => {
+        if (hasErrorCode(error, "P2025"))
+          throw new UpdatedError("Flashcard set not found", 404, error);
+        throw new UpdatedError("Failed to add cards", 500, error);
       });
 
     await Promise.all([
@@ -196,12 +220,12 @@ export class StudyService {
     limit: number = 10,
     userId?: string,
   ): Promise<QuizQuestion[]> {
-    const set: any = await this.getSetById(setId, userId);
+    const set = await this.getSetById(setId, userId);
     if (!set?.cards?.length) {
       throw new UpdatedError("Set has no cards to generate quiz", 422);
     }
 
-    const allCards: any[] = set.cards;
+    const allCards: Card[] = set.cards;
 
     const cardsToQuiz = [...allCards]
       .sort(() => 0.5 - Math.random())
@@ -209,7 +233,7 @@ export class StudyService {
 
     // `getSetById` đã lấy toàn bộ cards ở trên (và cache chúng). Chọn distractor
     // trong RAM để tránh N query DB cho N câu hỏi.
-    const questions = cardsToQuiz.map((card: any) => {
+    const questions = cardsToQuiz.map((card) => {
       const distractors = [...allCards]
         .filter((candidate) => candidate.id !== card.id)
         .sort(() => 0.5 - Math.random())

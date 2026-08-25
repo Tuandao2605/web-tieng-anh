@@ -33,7 +33,7 @@ export const errorHandlingMiddleware = (
     });
   }
   const pathView = `errors/${status}`;
-  return res.render(pathView, {
+  return res.status(status).render(pathView, {
     layout: false,
     message: message || "Server Error",
   });

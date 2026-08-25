@@ -124,6 +124,31 @@ export class StudyController {
 
   // ── POST /api/v1/sets/:id/cards/bulk ────────────────────────────────────────
 
+  async deleteSet(req: Request, res: Response) {
+    try {
+      const userId = req.user?.id;
+      if (!userId) return errorResponse(res, "Unauthorized", {}, 401);
+
+      const deleted = await studyService.deleteSet(
+        req.params.id as string,
+        userId,
+      );
+      return successResponse(
+        res,
+        deleted,
+        "Flashcard set deleted successfully",
+      );
+    } catch (error: any) {
+      const status = error instanceof UpdatedError ? error.status : 500;
+      return errorResponse(
+        res,
+        error.message || "Failed to delete flashcard set",
+        error,
+        status,
+      );
+    }
+  }
+
   async addCardsToSet(req: Request, res: Response) {
     try {
       const userId = req.user?.id;

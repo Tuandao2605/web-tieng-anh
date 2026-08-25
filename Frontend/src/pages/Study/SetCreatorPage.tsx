@@ -25,7 +25,7 @@ export const SetCreatorPage: React.FC = () => {
           setFetching(false);
         });
     }
-  }, [id, isEditing]);
+  }, [fetchSet, id, isEditing]);
 
   const handleSuccess = (savedSet: FlashcardSet) => {
     navigate(`/set/${savedSet.id}`);

@@ -18,9 +18,12 @@ export interface UpdateSetInput {
   cards?: Array<CreateCardInput & { id?: string }>;
 }
 
-class StudyRepository extends BaseRepository<FlashcardSet> {
+class StudyRepository extends BaseRepository<
+  FlashcardSet,
+  typeof prisma.flashcardSet
+> {
   constructor() {
-    super("flashcardSet");
+    super(prisma.flashcardSet);
   }
 
   async listSets(userId?: string) {
@@ -85,7 +88,7 @@ class StudyRepository extends BaseRepository<FlashcardSet> {
     );
 
     return {
-      decks: decks.map((deck: any) => ({
+      decks: decks.map((deck) => ({
         id: deck.id,
         title: deck.title,
         description: deck.description,
@@ -105,15 +108,15 @@ class StudyRepository extends BaseRepository<FlashcardSet> {
       data: {
         userId: input.userId,
         title: input.title,
-        description: input.description,
+        description: input.description ?? null,
         isPublic: input.isPublic ?? true,
         cards: {
           create: input.cards.map((card) => ({
             term: card.term,
             definition: card.definition,
-            audioUrl: card.audioUrl,
-            exampleSentence: card.exampleSentence,
-            imageUrl: card.imageUrl,
+            audioUrl: card.audioUrl ?? null,
+            exampleSentence: card.exampleSentence ?? null,
+            imageUrl: card.imageUrl ?? null,
           })),
         },
       },
@@ -206,6 +209,25 @@ class StudyRepository extends BaseRepository<FlashcardSet> {
         where: { id: setId },
         include: { cards: true },
       });
+    });
+  }
+
+  async deleteSet(setId: string, userId: string) {
+    const existingSet = await prisma.flashcardSet.findUnique({
+      where: { id: setId },
+      select: { id: true, userId: true },
+    });
+    if (!existingSet || existingSet.userId !== userId) {
+      const error = new Error("Flashcard set not found") as Error & {
+        code: string;
+      };
+      error.code = "P2025";
+      throw error;
+    }
+
+    return prisma.flashcardSet.delete({
+      where: { id: setId },
+      select: { id: true },
     });
   }
 

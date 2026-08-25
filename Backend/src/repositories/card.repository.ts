@@ -1,4 +1,5 @@
 import { Card } from "../generated/prisma/client";
+import { prisma } from "../libs/prisma";
 import { BaseRepository } from "./base.repository";
 
 export interface CreateCardInput {
@@ -9,9 +10,9 @@ export interface CreateCardInput {
     imageUrl?: string;
 }
 
-class CardRepository extends BaseRepository<Card> {
+class CardRepository extends BaseRepository<Card, typeof prisma.card> {
     constructor() {
-        super("card");
+        super(prisma.card);
     }
 
     /** Lấy các card ngẫu nhiên để làm distractor cho quiz */

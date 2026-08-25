@@ -29,7 +29,6 @@ const logRedisError = (name: string, error: unknown) => {
   if (now - lastLoggedAt < REDIS_ERROR_LOG_INTERVAL_MS) return;
 
   lastErrorLogByClient.set(name, now);
-  // eslint-disable-next-line no-console
   console.error(`${name} Redis error`, error);
 };
 
@@ -48,7 +47,6 @@ const createRedisConnection = (name: string): AppRedisClient => {
   void client
     .connect()
     .then(() => {
-      // eslint-disable-next-line no-console
       console.log(`${name} Redis connected`);
     })
     .catch((error: unknown) => logRedisError(name, error));

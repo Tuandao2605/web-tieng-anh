@@ -151,7 +151,6 @@ const publishInvalidation = async (
     );
   } catch (error) {
     // L1's short TTL is the fallback if Pub/Sub is temporarily unavailable.
-    // eslint-disable-next-line no-console
     console.warn("Unable to publish L1 cache invalidation", error);
   }
 };
@@ -170,12 +169,10 @@ const subscribeToInvalidations = () => {
           removeL1ByTagPrefix(message.value);
         }
       } catch (error) {
-        // eslint-disable-next-line no-console
         console.warn("Ignoring invalid L1 cache invalidation message", error);
       }
     })
     .catch((error) => {
-      // eslint-disable-next-line no-console
       console.warn("Unable to subscribe to L1 cache invalidations", error);
     });
 };
@@ -385,12 +382,12 @@ export const cacheService = {
     });
   },
 
-  async getOrSetRawWithTag(
+  async getOrSetRawWithTag<T>(
     key: string,
-    fetchFn: () => Promise<any>,
+    fetchFn: () => Promise<T>,
     tags: string[],
     ttl: number = 3600,
-    formatWrapper?: (data: any) => any,
+    formatWrapper?: (data: T) => unknown,
   ): Promise<string> {
     return loadCachedValue({
       key,

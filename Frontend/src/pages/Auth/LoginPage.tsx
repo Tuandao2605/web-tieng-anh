@@ -14,7 +14,7 @@ export const LoginPage: React.FC = () => {
     try {
       await login({ email, password });
       navigate('/');
-    } catch (err) {
+    } catch {
       // Error handled in store
     }
   };

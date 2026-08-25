@@ -7,11 +7,9 @@ const subscribeToOrders = () => {
 
   void subClient
     .subscribe("new-order", (data) => {
-      // eslint-disable-next-line no-console
       console.log(data);
     })
     .catch((error: unknown) => {
-      // eslint-disable-next-line no-console
       console.error("Unable to subscribe to Redis order channel", error);
     });
 };

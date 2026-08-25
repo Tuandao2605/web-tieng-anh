@@ -110,7 +110,6 @@ const logRateLimiterFailure = (message: string, error?: unknown) => {
   if (now - lastFailureLogAt < FAILURE_LOG_INTERVAL_MS) return;
 
   lastFailureLogAt = now;
-  // eslint-disable-next-line no-console
   console.error(message, error ?? "");
 };
 

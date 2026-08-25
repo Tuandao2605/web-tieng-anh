@@ -1,10 +1,11 @@
 import { User } from "../generated/prisma/client";
+import { prisma } from "../libs/prisma";
 import { BaseRepository } from "./base.repository";
 
 
-class UserRepository extends BaseRepository<User> {
+class UserRepository extends BaseRepository<User, typeof prisma.user> {
   constructor() {
-    super("user");
+    super(prisma.user);
   }
 
   async findByEmail(email: string): Promise<User | null> {

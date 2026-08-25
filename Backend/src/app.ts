@@ -6,6 +6,7 @@ import morgan from "morgan";
 import "./subscribers/order";
 // import "./consumer";
 import cors, { CorsOptions } from "cors";
+import helmet from "helmet";
 import routerWeb from "./routes/web";
 import routerApi from "./routes/api";
 import session from "express-session";
@@ -21,6 +22,7 @@ import { closeBullMqConnections } from "./utils/bullmq";
 import { startSchedulers, stopSchedulers } from "./scheduler";
 import { closeSocketServer } from "./web-socket/socket-server";
 import { csrfProtection } from "./middlewares/csrf.middleware";
+import type { ErrorWithStatus } from "./types/error";
 
 const app: Application = express();
 const {
@@ -44,6 +46,26 @@ if (trustProxy && trustProxy !== "false") {
     : trustProxy.split(",").map((entry) => entry.trim());
   app.set("trust proxy", trustProxySetting);
 }
+
+app.use(
+  helmet({
+    // The server-rendered pages currently load Tailwind and SweetAlert from
+    // jsDelivr and contain a small inline script. Keep those explicit while
+    // retaining Helmet's remaining CSP protections.
+    contentSecurityPolicy: {
+      directives: {
+        scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
+        upgradeInsecureRequests: isProduction ? [] : null,
+      },
+    },
+    // Third-party CDN assets do not consistently send CORP headers.
+    crossOriginEmbedderPolicy: false,
+    strictTransportSecurity: isProduction
+      ? { maxAge: 15_552_000, includeSubDomains: true }
+      : false,
+  }),
+);
 
 if (process.env.NODE_ENV === "development") {
   app.use(morgan("tiny"));
@@ -92,7 +114,11 @@ const corsOptions: CorsOptions = {
     if (!origin || allowedOrigins.has(origin)) {
       callback(null, true);
     } else {
-      callback(new Error(`Disallow by cors: ${origin}`));
+      const error: ErrorWithStatus = new Error(
+        `Disallow by cors: ${origin}`,
+      );
+      error.status = 403;
+      callback(error);
     }
   },
   optionsSuccessStatus: 200,

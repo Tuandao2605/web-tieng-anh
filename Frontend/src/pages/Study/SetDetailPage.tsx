@@ -1,24 +1,30 @@
 import React, { useEffect, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   GraduationCap, Zap, Pencil, Globe, Lock,
-  Layers, ChevronLeft, ChevronRight, Eye, EyeOff, Volume2, PlusCircle, PenLine
+  Layers, ChevronLeft, ChevronRight, Eye, EyeOff, Volume2, PlusCircle, PenLine,
+  Trash2, Loader2
 } from 'lucide-react';
 import { useStudyStore } from '../../store/useStudyStore';
+import { useAuthStore } from '../../store/useAuthStore';
 import type { Card, CreateCardInput } from '../../types';
 import { BulkAddCardsModal } from '../../components/study/BulkAddCardsModal';
 
 export const SetDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
-  const { currentSet, fetchSet, addCardsToSet, isLoading, error } = useStudyStore();
+  const navigate = useNavigate();
+  const { user } = useAuthStore();
+  const { currentSet, fetchSet, deleteSet, addCardsToSet, isLoading, error } = useStudyStore();
   const [previewIndex, setPreviewIndex] = useState(0);
   const [showDefinition, setShowDefinition] = useState(false);
   const [showBulkAdd, setShowBulkAdd] = useState(false);
   const [isAddingCards, setIsAddingCards] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     if (id) fetchSet(id);
-  }, [id]);
+  }, [fetchSet, id]);
 
   if (isLoading) {
     return (
@@ -42,6 +48,7 @@ export const SetDetailPage: React.FC = () => {
 
   const cards: Card[] = currentSet.cards || [];
   const previewCard = cards[previewIndex];
+  const canManageSet = user?.id === currentSet.userId;
 
   const prevCard = () => {
     setPreviewIndex((prev) => (prev - 1 + cards.length) % cards.length);
@@ -61,6 +68,29 @@ export const SetDetailPage: React.FC = () => {
       setShowDefinition(false);
     } finally {
       setIsAddingCards(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!id || isDeleting) return;
+    const confirmed = window.confirm(
+      `Xóa bộ thẻ "${currentSet.title}"? Tất cả thẻ và tiến độ học liên quan sẽ bị xóa vĩnh viễn.`,
+    );
+    if (!confirmed) return;
+
+    setDeleteError(null);
+    setIsDeleting(true);
+    try {
+      await deleteSet(id);
+      navigate('/', { replace: true });
+    } catch (deleteFailure: unknown) {
+      setDeleteError(
+        deleteFailure instanceof Error
+          ? deleteFailure.message
+          : 'Không thể xóa bộ thẻ. Vui lòng thử lại.',
+      );
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -84,24 +114,41 @@ export const SetDetailPage: React.FC = () => {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => setShowBulkAdd(true)}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-all"
-            >
-              <PlusCircle className="w-4 h-4" />
-              Thêm nhiều từ
-            </button>
-            <Link
-              to={`/set/${id}/edit`}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition-all"
-            >
-              <Pencil className="w-4 h-4" />
-              Chỉnh sửa
-            </Link>
-          </div>
+          {canManageSet && (
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setShowBulkAdd(true)}
+                disabled={isDeleting}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-all disabled:pointer-events-none disabled:opacity-60"
+              >
+                <PlusCircle className="w-4 h-4" />
+                Thêm nhiều từ
+              </button>
+              <Link
+                to={`/set/${id}/edit`}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition-all"
+              >
+                <Pencil className="w-4 h-4" />
+                Chỉnh sửa
+              </Link>
+              <button
+                type="button"
+                onClick={handleDelete}
+                disabled={isDeleting}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-300 transition-all disabled:pointer-events-none disabled:opacity-60"
+              >
+                {isDeleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                {isDeleting ? 'Đang xóa...' : 'Xóa bộ thẻ'}
+              </button>
+            </div>
+          )}
         </div>
+        {deleteError && (
+          <p className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+            {deleteError}
+          </p>
+        )}
       </div>
 
       {/* Study Mode Actions */}

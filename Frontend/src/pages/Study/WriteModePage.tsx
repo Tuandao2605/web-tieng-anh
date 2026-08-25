@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, CheckCircle, PenLine, RotateCcw, Trophy, XCircle } from 'lucide-react';
 import { useStudyStore } from '../../store/useStudyStore';
@@ -45,11 +45,13 @@ export const WriteModePage: React.FC = () => {
     };
   }, [id, fetchSet, resetSession, startNewSession]);
 
+  const currentCards = currentSet?.cards;
+
   useEffect(() => {
-    if (!currentSet) return;
-    setShuffledCards(shuffleCards(currentSet.cards));
+    if (!currentCards) return;
+    setShuffledCards(shuffleCards(currentCards));
     setCurrentCardIndex(0);
-  }, [currentSet?.id, setCurrentCardIndex]);
+  }, [currentCards, setCurrentCardIndex]);
 
   const cards = shuffledCards;
   const card = cards[currentCardIndex];
@@ -60,13 +62,13 @@ export const WriteModePage: React.FC = () => {
     requestAnimationFrame(() => inputRef.current?.focus());
   }, [card?.id]);
 
-  const advance = () => {
+  const advance = useCallback(() => {
     if (currentCardIndex + 1 < cards.length) {
       setCurrentCardIndex(currentCardIndex + 1);
     } else {
       setIsFinished(true);
     }
-  };
+  }, [cards.length, currentCardIndex, setCurrentCardIndex]);
 
   // Sau khi đã chấm, Enter giúp chuyển nhanh sang thẻ tiếp theo mà không cần dùng chuột.
   useEffect(() => {
@@ -78,7 +80,7 @@ export const WriteModePage: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [result, currentCardIndex, cards.length]);
+  }, [advance, result]);
 
   const checkAnswer = async (event: React.FormEvent) => {
     event.preventDefault();

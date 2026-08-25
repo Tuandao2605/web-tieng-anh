@@ -1,31 +1,39 @@
-import { prisma } from "../libs/prisma";
+type CrudModel<T> = {
+  findMany: () => Promise<T[]>;
+  findUnique: (args: { where: { id: string | number } }) => Promise<T | null>;
+  create: (args: { data: unknown }) => Promise<T>;
+  delete: (args: { where: { id: string | number } }) => Promise<T>;
+};
 
-export abstract class BaseRepository<T> {
-  protected model;
-  constructor(model: string) {
-    this.model = (prisma as any)[model];
+export abstract class BaseRepository<T, Model> {
+  protected readonly model: Model;
+  private readonly crudModel: CrudModel<T>;
+
+  constructor(model: Model) {
+    this.model = model;
+    this.crudModel = model as unknown as CrudModel<T>;
   }
 
   async findAll(): Promise<T[]> {
-    return await this.model.findMany();
+    return this.crudModel.findMany();
   }
 
   async findById(id: string | number): Promise<T | null> {
-    return await this.model.findUnique({
+    return this.crudModel.findUnique({
       where: {
         id,
       },
     });
   }
 
-  async create(data: any): Promise<T> {
-    return await this.model.create({
+  async create(data: unknown): Promise<T> {
+    return this.crudModel.create({
       data,
     });
   }
 
   async delete(id: string | number): Promise<T> {
-    return await this.model.delete({
+    return this.crudModel.delete({
       where: {
         id,
       },

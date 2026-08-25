@@ -9,7 +9,9 @@ export default defineConfig(
 
   {
     rules: {
-      "no-console": "warn",
+      // Console output is the current server/worker logger. Keep unsupported
+      // console methods prohibited while allowing the methods used by the app.
+      "no-console": ["error", { allow: ["log", "warn", "error"] }],
       "prefer-const": "error",
       "@typescript-eslint/no-explicit-any": "warn",
       "no-undef": "off",

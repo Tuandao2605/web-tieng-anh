@@ -6,7 +6,7 @@ import { CACHE } from "../constants/cache.constants";
 import crypto, { BinaryLike } from "crypto";
 import { IncludeRelations } from "../types/query";
 import { Prisma } from "../generated/prisma";
-import { UpdatedError } from "../errors/app.error";
+import { hasErrorCode, UpdatedError } from "../errors/app.error";
 import { elasticsearchService } from "./elasticsearch.service";
 interface SearchQuery {
   page?: string;
@@ -224,12 +224,12 @@ export const usersService = {
         console.warn("Unable to sync deck author to Elasticsearch", error);
       });
       return user;
-    } catch (error: any) {
-      if (error.code === "P2025") {
+    } catch (error: unknown) {
+      if (hasErrorCode(error, "P2025")) {
         throw new UpdatedError("User not found", 404, error);
       }
 
-      if (error.code === "P2002") {
+      if (hasErrorCode(error, "P2002")) {
         throw new UpdatedError("Email already exists", 409, error);
       }
 

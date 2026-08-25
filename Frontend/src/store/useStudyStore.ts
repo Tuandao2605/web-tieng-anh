@@ -24,6 +24,7 @@ interface StudyState {
   fetchSet: (setId: string) => Promise<FlashcardSet>;
   createSet: (input: CreateSetInput) => Promise<FlashcardSet>;
   updateSet: (setId: string, input: CreateSetInput) => Promise<FlashcardSet>;
+  deleteSet: (setId: string) => Promise<void>;
   addCardsToSet: (setId: string, cards: CreateCardInput[]) => Promise<FlashcardSet>;
   generateQuiz: (setId: string, limit?: number) => Promise<QuizQuestion[]>;
   startNewSession: (setId: string, mode?: string) => void;
@@ -102,6 +103,14 @@ export const useStudyStore = create<StudyState>((set, get) => ({
       set({ error: err.message || 'Cập nhật bộ thẻ thất bại', isLoading: false });
       throw err;
     }
+  },
+
+  deleteSet: async (setId: string) => {
+    await apiClient.delete(`/sets/${setId}`);
+    set((state) => ({
+      currentSet: state.currentSet?.id === setId ? null : state.currentSet,
+      error: null,
+    }));
   },
 
   addCardsToSet: async (setId: string, cards: CreateCardInput[]) => {

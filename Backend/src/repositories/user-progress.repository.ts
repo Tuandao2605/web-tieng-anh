@@ -1,4 +1,4 @@
-import { UserCardProgress } from "../generated/prisma/client";
+import { Prisma, UserCardProgress } from "../generated/prisma/client";
 import { BaseRepository } from "./base.repository";
 import { prisma } from "../libs/prisma";
 
@@ -13,9 +13,12 @@ export interface UpdateCardProgressInput {
     lastReviewedAt: Date;
 }
 
-class UserProgressRepository extends BaseRepository<UserCardProgress> {
+class UserProgressRepository extends BaseRepository<
+    UserCardProgress,
+    typeof prisma.userCardProgress
+> {
     constructor() {
-        super("userCardProgress");
+        super(prisma.userCardProgress);
     }
 
     async getUserProgressForCards(userId: string, cardIds: string[]) {
@@ -32,7 +35,7 @@ class UserProgressRepository extends BaseRepository<UserCardProgress> {
         totalCards: number,
         progressUpdates: UpdateCardProgressInput[]
     ) {
-        return (prisma as any).$transaction(async (tx: any) => {
+        return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
             // 1. Ghi lại Study Session
             const session = await tx.studySession.create({
                 data: { userId, setId, mode, score, totalCards, completedAt: new Date() },

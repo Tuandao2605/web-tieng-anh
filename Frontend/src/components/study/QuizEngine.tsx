@@ -64,7 +64,7 @@ export const QuizEngine: React.FC<QuizEngineProps> = ({
     if (currentQuestion && !isFinished && !answered) {
       speakTerm(currentQuestion);
     }
-  }, [currentIndex, currentQuestion, isFinished]);
+  }, [answered, currentIndex, currentQuestion, isFinished, speakTerm]);
 
   // Handle Option Click
   const handleSelectOption = async (optionIndex: number) => {

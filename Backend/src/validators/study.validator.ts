@@ -36,6 +36,12 @@ export const updateSetSchema = z.object({
   }),
 });
 
+export const deleteSetSchema = z.object({
+  params: z.object({
+    id: z.string().length(24, "Set ID must be a MongoDB ObjectId"),
+  }),
+});
+
 export const addCardsToSetSchema = z.object({
   params: z.object({
     id: z.string().length(24, "Set ID must be a MongoDB ObjectId"),

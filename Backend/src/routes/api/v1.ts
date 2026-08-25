@@ -21,6 +21,7 @@ import {
 import {
   createSetSchema,
   updateSetSchema,
+  deleteSetSchema,
   addCardsToSetSchema,
   generateQuizSchema,
   submitAnswerSchema,
@@ -107,6 +108,12 @@ router.put(
   authMiddleware,
   validate(updateSetSchema),
   studyController.updateSet,
+);
+router.delete(
+  "/sets/:id",
+  authMiddleware,
+  validate(deleteSetSchema),
+  studyController.deleteSet,
 );
 router.post(
   "/sets/:id/cards/bulk",

@@ -1,6 +1,6 @@
 import { Request } from "express";
 import { CACHE } from "../constants/cache.constants";
-import { UpdatedError } from "../errors/app.error";
+import { hasErrorCode, UpdatedError } from "../errors/app.error";
 import { Prisma, User } from "../generated/prisma";
 import { prisma } from "../libs/prisma";
 import { cacheService } from "./cache.service";
@@ -42,8 +42,8 @@ export const postsService = {
       await cacheService.invalidateGetTracker(CACHE.POST.TRACKERS.LIST_VERSION);
 
       return post;
-    } catch (error: any) {
-      if (error.code === "P2025") {
+    } catch (error: unknown) {
+      if (hasErrorCode(error, "P2025")) {
         throw new UpdatedError("User not found");
       }
 

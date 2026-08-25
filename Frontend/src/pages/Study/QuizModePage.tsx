@@ -28,7 +28,7 @@ export const QuizModePage: React.FC = () => {
     });
 
     return () => resetSession();
-  }, [id]);
+  }, [generateQuiz, id, resetSession, startNewSession]);
 
   const handleSubmitAnswer = async (cardId: string, isCorrect: boolean) => {
     await submitAnswer(cardId, isCorrect);
