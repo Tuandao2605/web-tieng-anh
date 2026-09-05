@@ -3,6 +3,11 @@ import studyService from "../../../services/study.service";
 import { UpdatedError } from "../../../errors/app.error";
 import { errorResponse, successResponse } from "../../../utils/response";
 
+const isAbortError = (error: unknown) =>
+  error instanceof Error &&
+  (error.name === "AbortError" ||
+    ("code" in error && error.code === "ABORT_ERR"));
+
 export class StudyController {
   async searchPublicDecks(req: Request, res: Response) {
     try {
@@ -11,17 +16,25 @@ export class StudyController {
         page: number;
         limit: number;
       };
-      const result = await studyService.searchPublicDecks(q, page, limit);
+      const result = await studyService.searchPublicDecks(
+        q,
+        page,
+        limit,
+        req.abortSignal,
+      );
       return successResponse(
         res,
         result,
         "Public decks retrieved successfully",
       );
-    } catch (error: any) {
+    } catch (error: unknown) {
+      if (isAbortError(error)) return;
       const status = error instanceof UpdatedError ? error.status : 500;
       return errorResponse(
         res,
-        error.message || "Failed to search public decks",
+        error instanceof Error
+          ? error.message
+          : "Failed to search public decks",
         error,
         status,
       );
@@ -33,12 +46,13 @@ export class StudyController {
   async listSets(req: Request, res: Response) {
     try {
       const userId = (req.user as any)?.id as string | undefined;
-      const rawJson = await studyService.listSetsRaw(userId);
+      const rawJson = await studyService.listSetsRaw(userId, req.abortSignal);
       return res
         .setHeader("Content-Type", "application/json")
         .status(200)
         .send(rawJson);
     } catch (error: any) {
+      if (isAbortError(error)) return;
       const status = error instanceof UpdatedError ? error.status : 500;
       return errorResponse(
         res,
@@ -81,9 +95,11 @@ export class StudyController {
       const set = await studyService.getSetById(
         req.params.id as string,
         req.user?.id,
+        req.abortSignal,
       );
       return successResponse(res, set, "Flashcard set retrieved successfully");
     } catch (error: any) {
+      if (isAbortError(error)) return;
       const status = error instanceof UpdatedError ? error.status : 404;
       return errorResponse(
         res,
@@ -183,6 +199,7 @@ export class StudyController {
         setId,
         limit,
         req.user?.id,
+        req.abortSignal,
       );
 
       return successResponse(
@@ -191,6 +208,7 @@ export class StudyController {
         "Quiz generated successfully",
       );
     } catch (error: any) {
+      if (isAbortError(error)) return;
       const status = error instanceof UpdatedError ? error.status : 500;
       return errorResponse(
         res,

@@ -51,7 +51,10 @@ export class StudyService {
 
   // ── 1. List Sets ────────────────────────────────────────────────────────────
 
-  async listSetsRaw(userId?: string): Promise<string> {
+  async listSetsRaw(
+    userId?: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
     // A single cached representation is enough: this raw JSON is sent directly
     // by the controller and avoids serializing the same list on every hit.
     const cacheKey = userId
@@ -71,10 +74,16 @@ export class StudyService {
           message: "Flashcard sets retrieved successfully",
         },
       }),
+      signal,
     );
   }
 
-  async searchPublicDecks(keyword: string, page: number, limit: number) {
+  async searchPublicDecks(
+    keyword: string,
+    page: number,
+    limit: number,
+    signal?: AbortSignal,
+  ) {
     const normalizedKeyword = keyword.trim();
     let result;
     try {
@@ -82,8 +91,12 @@ export class StudyService {
         normalizedKeyword,
         page,
         limit,
+        signal,
       );
     } catch (error) {
+      // Client disconnect không phải lỗi Elasticsearch; không chạy thêm query
+      // fallback khi kết quả không còn người nhận.
+      signal?.throwIfAborted();
       if (process.env.ELASTICSEARCH_FALLBACK_TO_MONGO !== "true") {
         throw new UpdatedError(
           "Search service is temporarily unavailable",
@@ -193,7 +206,11 @@ export class StudyService {
 
   // ── 5. Get Set by ID (Cache-Aside, TTL 1h) ──────────────────────────────────
 
-  async getSetById(setId: string, userId?: string) {
+  async getSetById(
+    setId: string,
+    userId?: string,
+    signal?: AbortSignal,
+  ) {
     const set = await cacheService.getOrSetWithTag(
       `set:${setId}:cards`,
       async () => {
@@ -203,6 +220,7 @@ export class StudyService {
       },
       ["sets", `set:${setId}`],
       3600,
+      signal,
     );
 
     if (!set.isPublic && set.userId !== userId) {
@@ -219,8 +237,9 @@ export class StudyService {
     setId: string,
     limit: number = 10,
     userId?: string,
+    signal?: AbortSignal,
   ): Promise<QuizQuestion[]> {
-    const set = await this.getSetById(setId, userId);
+    const set = await this.getSetById(setId, userId, signal);
     if (!set?.cards?.length) {
       throw new UpdatedError("Set has no cards to generate quiz", 422);
     }

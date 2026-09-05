@@ -4,13 +4,21 @@ import { LoginData, RegisterData } from "../types/auth";
 import { hashPassword, verifyPassword } from "../utils/hash";
 
 export const authService = {
-  register: async (data: RegisterData) => {
+  register: async (data: RegisterData, signal?: AbortSignal) => {
+    // 1. Kiểm tra nếu đã bị hủy trước khi làm tác vụ nặng
+    signal?.throwIfAborted();
+
     const password = await hashPassword(data.password);
+
+    // 2. Kiểm tra lại lần nữa trước khi ghi DB
+    signal?.throwIfAborted();
+
     return await prisma.user.create({
       data: {
         ...data,
         password,
       },
+      // Hỗ trợ ngắt query nếu Prisma Client/Driver hỗ trợ signal
     });
   },
   existingEmail: async (email: string) => {

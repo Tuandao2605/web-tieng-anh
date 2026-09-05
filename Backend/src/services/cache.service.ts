@@ -61,6 +61,33 @@ const inFlight = new Map<string, Promise<unknown>>();
 const tagName = (tags: string[]) => `tag:${tags.join(":")}`;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// A cache fill is shared by multiple requests. Abort only this caller's wait;
+// the shared operation must continue so another request can still use it.
+const waitForPromise = <T>(promise: Promise<T>, signal?: AbortSignal) => {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      reject(signal.reason);
+    };
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error: unknown) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+};
+
 const removeL1Key = (key: string) => {
   const entry = l1Cache.get(key);
   if (!entry) return;
@@ -207,7 +234,11 @@ const waitForL2Value = async (key: string, lockKey: string) => {
   return null;
 };
 
-const loadCachedValue = async <T>(options: CacheLoadOptions<T>): Promise<T> => {
+const loadCachedValue = async <T>(
+  options: CacheLoadOptions<T>,
+  signal?: AbortSignal,
+): Promise<T> => {
+  signal?.throwIfAborted();
   const { key, fetchFn, ttl, tags = [], encode, decode } = options;
   const shouldCache = options.shouldCache ?? (() => true);
 
@@ -215,7 +246,9 @@ const loadCachedValue = async <T>(options: CacheLoadOptions<T>): Promise<T> => {
   if (local.hit) return local.value;
 
   const existingFlight = inFlight.get(key);
-  if (existingFlight) return existingFlight as Promise<T>;
+  if (existingFlight) {
+    return waitForPromise(existingFlight as Promise<T>, signal);
+  }
 
   const request = (async () => {
     // The Redis lookup itself is inside single-flight. When L1 expires under
@@ -275,7 +308,7 @@ const loadCachedValue = async <T>(options: CacheLoadOptions<T>): Promise<T> => {
   });
 
   inFlight.set(key, request);
-  return request;
+  return waitForPromise(request, signal);
 };
 
 export const cacheService = {
@@ -283,15 +316,19 @@ export const cacheService = {
     key: string,
     fetchFn: () => Promise<T>,
     ttl: number = 3600,
+    signal?: AbortSignal,
   ): Promise<T> {
-    return loadCachedValue({
-      key,
-      fetchFn,
-      ttl,
-      encode: JSON.stringify,
-      decode: JSON.parse,
-      shouldCache: (value) => value !== null && value !== undefined,
-    });
+    return loadCachedValue(
+      {
+        key,
+        fetchFn,
+        ttl,
+        encode: JSON.stringify,
+        decode: JSON.parse,
+        shouldCache: (value) => value !== null && value !== undefined,
+      },
+      signal,
+    );
   },
 
   async delete(key: string) {
@@ -370,16 +407,20 @@ export const cacheService = {
     fetchFn: () => Promise<T>,
     tags: string[],
     ttl: number = 3600,
+    signal?: AbortSignal,
   ): Promise<T> {
-    return loadCachedValue({
-      key,
-      fetchFn,
-      tags,
-      ttl,
-      encode: JSON.stringify,
-      decode: JSON.parse,
-      shouldCache: (value) => value !== null && value !== undefined,
-    });
+    return loadCachedValue(
+      {
+        key,
+        fetchFn,
+        tags,
+        ttl,
+        encode: JSON.stringify,
+        decode: JSON.parse,
+        shouldCache: (value) => value !== null && value !== undefined,
+      },
+      signal,
+    );
   },
 
   async getOrSetRawWithTag<T>(
@@ -388,23 +429,27 @@ export const cacheService = {
     tags: string[],
     ttl: number = 3600,
     formatWrapper?: (data: T) => unknown,
+    signal?: AbortSignal,
   ): Promise<string> {
-    return loadCachedValue({
-      key,
-      ttl,
-      tags,
-      fetchFn: async () => {
-        const freshData = await fetchFn();
-        if (freshData === null || freshData === undefined) return "";
-        const payload = formatWrapper ? formatWrapper(freshData) : freshData;
-        return typeof payload === "string"
-          ? payload
-          : JSON.stringify(payload);
+    return loadCachedValue(
+      {
+        key,
+        ttl,
+        tags,
+        fetchFn: async () => {
+          const freshData = await fetchFn();
+          if (freshData === null || freshData === undefined) return "";
+          const payload = formatWrapper ? formatWrapper(freshData) : freshData;
+          return typeof payload === "string"
+            ? payload
+            : JSON.stringify(payload);
+        },
+        encode: (value) => value,
+        decode: (value) => value,
+        shouldCache: (value) => value.length > 0,
       },
-      encode: (value) => value,
-      decode: (value) => value,
-      shouldCache: (value) => value.length > 0,
-    });
+      signal,
+    );
   },
 
   async invalidateTag(tags: string[]) {

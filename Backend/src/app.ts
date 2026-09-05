@@ -23,15 +23,11 @@ import { startSchedulers, stopSchedulers } from "./scheduler";
 import { closeSocketServer } from "./web-socket/socket-server";
 import { csrfProtection } from "./middlewares/csrf.middleware";
 import type { ErrorWithStatus } from "./types/error";
+import { attachAbortSignal } from "./middlewares/abortSignal";
 
 const app: Application = express();
-const {
-  isProduction,
-  port,
-  sessionSecret,
-  sessionCookieName,
-  sessionTtlMs,
-} = runtimeConfig;
+const { isProduction, port, sessionSecret, sessionCookieName, sessionTtlMs } =
+  runtimeConfig;
 
 const trustProxy = process.env.TRUST_PROXY?.trim();
 if (trustProxy && trustProxy !== "false") {
@@ -114,9 +110,7 @@ const corsOptions: CorsOptions = {
     if (!origin || allowedOrigins.has(origin)) {
       callback(null, true);
     } else {
-      const error: ErrorWithStatus = new Error(
-        `Disallow by cors: ${origin}`,
-      );
+      const error: ErrorWithStatus = new Error(`Disallow by cors: ${origin}`);
       error.status = 403;
       callback(error);
     }
@@ -130,8 +124,7 @@ const corsOptions: CorsOptions = {
 
 // JWT APIs do not need express-session. Mounting them first avoids allocating,
 // loading and saving a server session for every API request.
-app.use("/api", cors(corsOptions), routerApi);
-
+app.use("/api", cors(corsOptions), attachAbortSignal, routerApi);
 // Session and flash are only needed by the server-rendered web routes.
 app.use(webSessionMiddleware);
 app.use(flash());

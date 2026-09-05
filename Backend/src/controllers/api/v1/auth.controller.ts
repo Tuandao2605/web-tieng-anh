@@ -3,10 +3,14 @@ import { apiAuthService } from "../../../services/apiAuth.service";
 import { authService } from "../../../services/auth.service";
 import { errorResponse, successResponse } from "../../../utils/response";
 
+// Helper kiểm tra lỗi ngắt tác vụ
+const isAbortError = (error: any) =>
+  error?.name === "AbortError" || error?.code === "ABORT_ERR";
+
 export const apiAuthController = {
   register: async (req: Request, res: Response) => {
     try {
-      const user = await authService.register(req.body);
+      const user = await authService.register(req.body, req.abortSignal);
       const safeUser = {
         id: user.id,
         name: user.name,
@@ -17,6 +21,7 @@ export const apiAuthController = {
       };
       return successResponse(res, safeUser, "Register Success", 201);
     } catch (error: any) {
+      if (isAbortError(error)) return; // Bỏ qua response nếu client đã hủy request
       if (error?.code === "P2002") {
         return errorResponse(res, "Email already exists", {}, 409);
       }
@@ -38,17 +43,34 @@ export const apiAuthController = {
   forgotPassword: async (req: Request, res: Response) => {
     try {
       await apiAuthService.requestPasswordReset(req.body.email);
-      return successResponse(res, {}, "Nếu email tồn tại, liên kết đặt lại mật khẩu đã được gửi.");
+      return successResponse(
+        res,
+        {},
+        "Nếu email tồn tại, liên kết đặt lại mật khẩu đã được gửi.",
+      );
     } catch (error) {
       // Giữ thông điệp chung để tránh dò email, đồng thời không tiết lộ lỗi SMTP.
       console.error("Password reset email failed", error);
-      return successResponse(res, {}, "Nếu email tồn tại, liên kết đặt lại mật khẩu đã được gửi.");
+      return successResponse(
+        res,
+        {},
+        "Nếu email tồn tại, liên kết đặt lại mật khẩu đã được gửi.",
+      );
     }
   },
   resetPassword: async (req: Request, res: Response) => {
     try {
-      const updated = await apiAuthService.resetPassword(req.body.token, req.body.password);
-      if (!updated) return errorResponse(res, "Liên kết đặt lại mật khẩu không hợp lệ hoặc đã hết hạn", {}, 400);
+      const updated = await apiAuthService.resetPassword(
+        req.body.token,
+        req.body.password,
+      );
+      if (!updated)
+        return errorResponse(
+          res,
+          "Liên kết đặt lại mật khẩu không hợp lệ hoặc đã hết hạn",
+          {},
+          400,
+        );
       return successResponse(res, {}, "Đặt lại mật khẩu thành công");
     } catch {
       return errorResponse(res, "Không thể đặt lại mật khẩu", {}, 500);

@@ -124,21 +124,34 @@ async function buildDocuments(decks: Array<{
 }
 
 export const elasticsearchService = {
-  async searchPublicDecks(keyword: string, page: number, limit: number) {
+  async searchPublicDecks(
+    keyword: string,
+    page: number,
+    limit: number,
+    signal?: AbortSignal,
+  ) {
+    signal?.throwIfAborted();
     await ensureIndex();
-    const response = await client.search<PublicDeckDocument>({
-      index: INDEX_NAME,
-      from: (page - 1) * limit,
-      size: limit,
-      track_total_hits: true,
-      query: {
-        bool: {
-          filter: [{ term: { isPublic: true } }],
-          must: [{ match: { title: { query: keyword, operator: "and" } } }],
+    signal?.throwIfAborted();
+    const response = await client.search<PublicDeckDocument>(
+      {
+        index: INDEX_NAME,
+        from: (page - 1) * limit,
+        size: limit,
+        track_total_hits: true,
+        query: {
+          bool: {
+            filter: [{ term: { isPublic: true } }],
+            must: [{ match: { title: { query: keyword, operator: "and" } } }],
+          },
         },
+        sort: [
+          { _score: { order: "desc" } },
+          { updatedAt: { order: "desc" } },
+        ],
       },
-      sort: [{ _score: { order: "desc" } }, { updatedAt: { order: "desc" } }],
-    });
+      signal ? { signal } : undefined,
+    );
     const total = typeof response.hits.total === "number"
       ? response.hits.total
       : response.hits.total?.value ?? 0;
