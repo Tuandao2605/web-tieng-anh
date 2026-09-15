@@ -51,10 +51,7 @@ export class StudyService {
 
   // ── 1. List Sets ────────────────────────────────────────────────────────────
 
-  async listSetsRaw(
-    userId?: string,
-    signal?: AbortSignal,
-  ): Promise<string> {
+  async listSetsRaw(userId?: string, signal?: AbortSignal): Promise<string> {
     // A single cached representation is enough: this raw JSON is sent directly
     // by the controller and avoids serializing the same list on every hit.
     const cacheKey = userId
@@ -206,11 +203,7 @@ export class StudyService {
 
   // ── 5. Get Set by ID (Cache-Aside, TTL 1h) ──────────────────────────────────
 
-  async getSetById(
-    setId: string,
-    userId?: string,
-    signal?: AbortSignal,
-  ) {
+  async getSetById(setId: string, userId?: string, signal?: AbortSignal) {
     const set = await cacheService.getOrSetWithTag(
       `set:${setId}:cards`,
       async () => {
@@ -422,6 +415,18 @@ export class StudyService {
 
   async syncProgress(userId: string, sessionId: string) {
     const sessionKey = `user:${userId}:session:${sessionId}`;
+
+    // MongoDB is the durable idempotency authority. This check also covers the
+    // crash window where the transaction committed but Redis cleanup did not.
+    const existingSession = await userProgressRepository.findSyncedSession(
+      userId,
+      sessionId,
+    );
+    if (existingSession) {
+      await this.redis.del(sessionKey);
+      return existingSession;
+    }
+
     const rawSession = await this.redis.get(sessionKey);
 
     if (!rawSession) {
@@ -448,6 +453,7 @@ export class StudyService {
 
     const savedSession = await userProgressRepository.syncSessionProgress(
       userId,
+      sessionId,
       sessionState.setId,
       sessionState.mode,
       score,

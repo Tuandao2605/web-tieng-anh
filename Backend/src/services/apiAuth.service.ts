@@ -42,15 +42,32 @@ function jwtCacheGet(token: string) {
   return entry;
 }
 
-function jwtCacheSet(token: string, payload: AuthenticatedUser, jti: string) {
+function jwtCacheSet(
+  token: string,
+  payload: AuthenticatedUser,
+  jti: string,
+  tokenExpSeconds?: number,
+) {
   if (_jwtCache.size >= JWT_CACHE_MAX) {
     const firstKey = _jwtCache.keys().next().value;
     if (firstKey) _jwtCache.delete(firstKey);
   }
+
+  const now = Date.now();
+  const defaultCacheExpiresAt = now + JWT_CACHE_TTL_MS;
+
+  // 🛡️ BẢO VỆ: Cache TTL không bao giờ được vượt quá exp của token
+  const tokenExpiresAtMs = tokenExpSeconds
+    ? tokenExpSeconds * 1000
+    : defaultCacheExpiresAt;
+  const actualExpiresAt = Math.min(defaultCacheExpiresAt, tokenExpiresAtMs);
+  // Nếu token đã hết hạn hoặc chỉ còn < 1ms thì không lưu vào cache
+  if (actualExpiresAt <= now) return;
+
   _jwtCache.set(token, {
     payload,
     jti,
-    expiresAt: Date.now() + JWT_CACHE_TTL_MS,
+    expiresAt: actualExpiresAt,
   });
 }
 
@@ -181,9 +198,10 @@ export const apiAuthService = {
     if (!id || !email || status === false) return false;
 
     const payload = { id, email, name: name ?? null, status: status ?? true };
-
+    // Lấy trường exp từ token vừa decode
+    const tokenExp = (decoded as { exp?: number })?.exp;
     // 4. Verification successful -> Store raw token string in memory cache
-    jwtCacheSet(token, payload, validJti);
+    jwtCacheSet(token, payload, validJti, tokenExp);
     return payload;
   },
   logout: async (token: string, userId: string) => {
@@ -213,8 +231,15 @@ export const apiAuthService = {
     const jti = (decoded as { jti: string }).jti;
     const userId = (decoded as { id: string }).id;
 
-    const RefreshTokenFromRedis = await redis.get(`refresh_token:${jti}`);
-    if (!RefreshTokenFromRedis) {
+    // const RefreshTokenFromRedis = await redis.get(`refresh_token:${jti}`);
+    // if (!RefreshTokenFromRedis) {
+    //   return false;
+    // }
+    // 🛡️ ATOMIC: Lấy dữ liệu VÀ xóa token cũ ngay lập tức trong 1 lệnh duy nhất!
+    // Request nào đến trước sẽ lấy được data. Request thứ 2 đến đồng thời sẽ nhận về null ngay.
+    const oldTokenData = await redis.getDel(`refresh_token:${jti}`);
+    if (!oldTokenData) {
+      // Token không tồn tại hoặc ĐÃ ĐƯỢC TIÊU THỤ bởi 1 request song song trước đó
       return false;
     }
     const payload = {
@@ -242,10 +267,6 @@ export const apiAuthService = {
       },
     );
 
-    //delete old jti from Redis
-    await redis.del(`refresh_token:${jti}`);
-
-    await redis.del(`refresh_token:${RefreshTokenFromRedis}`);
     return {
       accessToken: newaccessToken,
       refreshToken: newRefreshToken,

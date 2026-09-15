@@ -11,13 +11,18 @@ export const postsService = {
       CACHE.POST.TRACKERS.LIST_VERSION,
     );
 
+    const userId = req.user?.id;
+    if (!userId) {
+      throw new UpdatedError("Unauthorized", 401);
+    }
+
     return cacheService.getOrSetWithTag(
-      CACHE.POST.KEYS.LIST(+listVersion),
+      CACHE.POST.KEYS.LIST(userId, +listVersion),
       async () => {
         return await prisma.post.findMany({
           where: {
             user: {
-              id: req.user?.id as string,
+              id: userId,
             },
           },
         });

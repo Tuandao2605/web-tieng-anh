@@ -4,11 +4,13 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node --test -r ts-node/register tests/**/*.test.ts",
+    "test": "npm run typecheck:test && TS_NODE_PROJECT=tsconfig.test.json node --test -r ts-node/register tests/*.test.ts tests/integration/*.test.ts",
+    "test:integration": "npm run typecheck:test && TS_NODE_PROJECT=tsconfig.test.json node --test -r ts-node/register tests/integration/*.test.ts",
+    "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
     "build": "tsc && mkdir -p dist/src && cp -r src/generated src/views dist/src/",
     "dev": "nodemon src/app.ts",
     "start": "node dist/src/app.js",
-    "lint": "eslint src/**/*.ts",
+    "lint": "eslint src/**/*.ts tests/**/*.ts",
     "lint:fix": "eslint src/**/*.ts --fix",
     "search:reindex": "ts-node src/scripts/reindex-public-decks.ts"
   },

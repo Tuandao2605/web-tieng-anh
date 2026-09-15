@@ -192,9 +192,7 @@ export class StudyController {
   async generateQuiz(req: Request, res: Response) {
     try {
       const setId = req.params.id as string;
-      const limit = req.query.limit
-        ? parseInt(req.query.limit as string, 10)
-        : 10;
+      const limit = Number(req.query.limit ?? 10);
       const questions = await studyService.generateQuiz(
         setId,
         limit,

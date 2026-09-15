@@ -54,8 +54,8 @@ export const CACHE = {
   POST: {
     _VER: "v1",
     KEYS: {
-      LIST: (listVersion: number) =>
-        `${PREFIX}:${GLOBAL_VER}:posts:${CACHE.POST._VER}:list_v${listVersion}`,
+      LIST: (userId: string, listVersion: number) =>
+        `${PREFIX}:${GLOBAL_VER}:posts:${CACHE.POST._VER}:user_${userId}:list_v${listVersion}`,
       // if (hashFilters) {
       //   key = key + `_hash_${hashFilters}`;
       // }

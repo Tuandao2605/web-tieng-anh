@@ -56,15 +56,10 @@ export const addCardsToSetSchema = z.object({
 
 export const generateQuizSchema = z.object({
   params: z.object({
-    id: z.string().min(1, "Set ID is required"),
+    id: z.string().length(24, "Set ID must be a MongoDB ObjectId"),
   }),
   query: z.object({
-    limit: z
-      .string()
-      .optional()
-      .transform((val: string | undefined) =>
-        val ? parseInt(val, 10) : 10,
-      ),
+    limit: z.coerce.number().int().min(1).max(100).default(10),
   }),
 });
 
