@@ -1,0 +1,53 @@
+name: Product tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: product-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            Backend/package-lock.json
+            Frontend/package-lock.json
+
+      - name: Install Redis test binary
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-server
+
+      - name: Install backend dependencies
+        working-directory: Backend
+        run: npm ci
+
+      - name: Install frontend dependencies
+        working-directory: Frontend
+        run: npm ci
+
+      - name: Run all tests
+        working-directory: Backend
+        run: npm run test:all
+
+      - name: Clean product-test containers
+        if: always()
+        working-directory: Backend
+        run: >-
+          docker compose -p english-learning-product-test
+          -f tests/product/docker-compose.yml
+          down --volumes --remove-orphans --timeout 5

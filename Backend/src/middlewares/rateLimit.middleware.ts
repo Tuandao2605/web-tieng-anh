@@ -1,7 +1,9 @@
 import { NextFunction, Request, Response } from "express";
-import type { JwtPayload } from "jsonwebtoken";
-import { JwtPayLoad } from "../types/auth";
-import { verifyToken } from "../utils/jwt";
+import type { RequestAuthContext } from "../types/auth";
+import {
+  extractBearerToken,
+  verifyAccessTokenCached,
+} from "../services/accessToken.service";
 import { redisClient } from "../utils/redis";
 import { errorResponse } from "../utils/response";
 const redis = redisClient.getInstance();
@@ -32,14 +34,6 @@ const REDIS_COMMAND_TIMEOUT_MS = positiveNumberFromEnv(
   process.env.RATE_LIMIT_REDIS_TIMEOUT_MS,
   1000,
 );
-const IDENTITY_CACHE_TTL_MS = positiveNumberFromEnv(
-  process.env.RATE_LIMIT_IDENTITY_CACHE_TTL_MS,
-  5000,
-);
-const IDENTITY_CACHE_MAX_ENTRIES = positiveNumberFromEnv(
-  process.env.RATE_LIMIT_IDENTITY_CACHE_MAX_ENTRIES,
-  10000,
-);
 const AUTH_REQUESTS_PER_WINDOW = positiveNumberFromEnv(
   process.env.AUTH_RATE_LIMIT_MAX_REQUESTS,
   5,
@@ -59,86 +53,12 @@ const HEAVY_WINDOW_MS = positiveNumberFromEnv(
 const FAILURE_LOG_INTERVAL_MS = 30000;
 let lastFailureLogAt = 0;
 
-type IdentityCacheEntry = {
-  userId: string;
-  expiresAt: number;
-};
-
-// This positive-only L1 caches verified token -> user ID mappings. Invalid
-// tokens are attacker-controlled and must never consume cache capacity, or they
-// could evict valid identities and force repeated signature verification.
-// It never caches an "allowed" decision or token count, so Redis remains the
-// atomic global quota authority when the application runs in multiple workers.
-const identityCache = new Map<string, IdentityCacheEntry>();
-
-const readCachedIdentity = (token: string) => {
-  const entry = identityCache.get(token);
-  if (!entry) return { hit: false as const };
-  if (entry.expiresAt <= Date.now()) {
-    identityCache.delete(token);
-    return { hit: false as const };
-  }
-
-  identityCache.delete(token);
-  identityCache.set(token, entry);
-  return { hit: true as const, userId: entry.userId };
-};
-
-const cacheIdentity = (
-  token: string,
-  userId: string,
-  tokenExpiresAt?: number,
-) => {
-  if (identityCache.has(token)) identityCache.delete(token);
-  while (identityCache.size >= IDENTITY_CACHE_MAX_ENTRIES) {
-    const oldestToken = identityCache.keys().next().value as string | undefined;
-    if (!oldestToken) break;
-    identityCache.delete(oldestToken);
-  }
-
-  identityCache.set(token, {
-    userId,
-    expiresAt: Math.min(
-      Date.now() + IDENTITY_CACHE_TTL_MS,
-      tokenExpiresAt ?? Number.POSITIVE_INFINITY,
-    ),
-  });
-};
-
 const logRateLimiterFailure = (message: string, error?: unknown) => {
   const now = Date.now();
   if (now - lastFailureLogAt < FAILURE_LOG_INTERVAL_MS) return;
 
   lastFailureLogAt = now;
   console.error(message, error ?? "");
-};
-
-const getUserIdFromAccessToken = (authorization: string | undefined) => {
-  const match = authorization?.match(/^Bearer\s+(\S+)$/i);
-  const token = match?.[1];
-  if (!token) return undefined;
-
-  const cachedIdentity = readCachedIdentity(token);
-  if (cachedIdentity.hit) return cachedIdentity.userId;
-
-  try {
-    const decoded = verifyToken(token);
-    if (!decoded || typeof decoded === "string") return undefined;
-
-    const userId = (decoded as Partial<JwtPayLoad>).id;
-    const normalizedUserId =
-      typeof userId === "string" && userId.length > 0 ? userId : undefined;
-    if (!normalizedUserId) return undefined;
-
-    const tokenExpiry = (decoded as JwtPayload).exp;
-    const expiresAt =
-      typeof tokenExpiry === "number" ? tokenExpiry * 1000 : undefined;
-    cacheIdentity(token, normalizedUserId, expiresAt);
-    return normalizedUserId;
-  } catch {
-    // Identity lookup must never turn a malformed token into a server error.
-    return undefined;
-  }
 };
 
 type IdentityStrategy = "ip" | "user-or-ip";
@@ -161,17 +81,54 @@ type RateLimitPolicy = {
   idleTtlMs: number;
 };
 
-const getRateLimitIdentity = (req: Request, strategy: IdentityStrategy) => {
+type IdentityResolution = {
+  identity: string | undefined;
+  authContext?: RequestAuthContext;
+  blacklistJti?: string;
+};
+
+const resolveRequestAuthContext = (req: Request): RequestAuthContext => {
+  if (req.authContext) return req.authContext;
+
+  const token = extractBearerToken(req.headers.authorization);
+  const principal = token ? verifyAccessTokenCached(token) : null;
+  const context: RequestAuthContext = {
+    token,
+    principal,
+    // Missing/malformed tokens have no valid JTI to check. A valid principal is
+    // marked checked only after its EXISTS reply returns from the pipeline.
+    blacklistChecked: principal === null,
+    revoked: false,
+  };
+  req.authContext = context;
+  return context;
+};
+
+const getRateLimitIdentity = (
+  req: Request,
+  strategy: IdentityStrategy,
+): IdentityResolution => {
   const clientIp = req.ip ?? req.socket.remoteAddress;
-  if (strategy === "ip") return clientIp ? `ip:${clientIp}` : undefined;
+  if (strategy === "ip") {
+    return { identity: clientIp ? `ip:${clientIp}` : undefined };
+  }
 
-  // Authentication still happens in authMiddleware. Signature verification here
-  // only prevents clients from forging user IDs to rotate rate-limit buckets.
-  const userId =
-    req.user?.id ?? getUserIdFromAccessToken(req.headers.authorization);
-  if (userId) return `user:${userId}`;
+  const authContext = resolveRequestAuthContext(req);
+  const userId = req.user?.id ?? authContext.principal?.user.id;
+  if (userId) {
+    return {
+      identity: `user:${userId}`,
+      authContext,
+      ...(!authContext.blacklistChecked && authContext.principal
+        ? { blacklistJti: authContext.principal.jti }
+        : {}),
+    };
+  }
 
-  return clientIp ? `ip:${clientIp}` : undefined;
+  return {
+    identity: clientIp ? `ip:${clientIp}` : undefined,
+    authContext,
+  };
 };
 
 // Token bucket executed atomically in Redis. Redis TIME avoids clock skew among
@@ -236,15 +193,62 @@ const loadTokenBucketScript = () => {
 const isNoScriptError = (error: unknown) =>
   error instanceof Error && error.message.includes("NOSCRIPT");
 
-const evaluateTokenBucket = async (key: string, arguments_: string[]) => {
+const executeTokenBucketPipeline = async (
+  sha: string,
+  key: string,
+  arguments_: string[],
+  blacklistJti?: string,
+) => {
   const commandOptions = { keys: [key], arguments: arguments_ };
+  const client = redis.withCommandOptions({
+    timeout: REDIS_COMMAND_TIMEOUT_MS,
+  });
+
+  if (!blacklistJti) {
+    return {
+      bucket: (await client.evalSha(sha, commandOptions)) as [
+        number,
+        number,
+        number,
+      ],
+      revoked: false,
+    };
+  }
+
+  // execAsPipeline sends EVALSHA and EXISTS in one network batch without the
+  // MULTI/EXEC transaction overhead. Redis still executes the Lua token bucket
+  // atomically, and the centralized blacklist remains strongly consistent.
+  const replies = await client
+    .multi()
+    .evalSha(sha, commandOptions)
+    .exists(`blacklist_token:${blacklistJti}`)
+    .execAsPipeline();
+  const bucketReply = replies[0];
+  const blacklistReply = replies[1];
+  if (bucketReply instanceof Error) throw bucketReply;
+  if (blacklistReply instanceof Error) throw blacklistReply;
+
+  return {
+    bucket: bucketReply as unknown as [number, number, number],
+    revoked: Number(blacklistReply) > 0,
+  };
+};
+
+const evaluateTokenBucket = async (
+  key: string,
+  arguments_: string[],
+  blacklistJti?: string,
+) => {
   let sha = await loadTokenBucketScript();
   const evaluatedGeneration = tokenBucketGeneration;
 
   try {
-    return await redis
-      .withCommandOptions({ timeout: REDIS_COMMAND_TIMEOUT_MS })
-      .evalSha(sha, commandOptions);
+    return await executeTokenBucketPipeline(
+      sha,
+      key,
+      arguments_,
+      blacklistJti,
+    );
   } catch (error) {
     if (!isNoScriptError(error)) throw error;
 
@@ -257,9 +261,7 @@ const evaluateTokenBucket = async (key: string, arguments_: string[]) => {
       tokenBucketSha = null;
     }
     sha = await loadTokenBucketScript();
-    return redis
-      .withCommandOptions({ timeout: REDIS_COMMAND_TIMEOUT_MS })
-      .evalSha(sha, commandOptions);
+    return executeTokenBucketPipeline(sha, key, arguments_, blacklistJti);
   }
 };
 
@@ -289,19 +291,26 @@ const GLOBAL_POLICY = createPolicy({
 export const consumeRateLimitToken = async (
   identity: string,
   policy: RateLimitPolicy = GLOBAL_POLICY,
+  blacklistJti?: string,
 ) => {
   const key = `rateLimit:${policy.namespace}:${identity}`;
-  const result = (await evaluateTokenBucket(key, [
-    String(policy.bucketCapacity),
-    String(policy.refillPerMs),
-    "1",
-    String(policy.idleTtlMs),
-  ])) as [number, number, number];
+  const evaluation = await evaluateTokenBucket(
+    key,
+    [
+      String(policy.bucketCapacity),
+      String(policy.refillPerMs),
+      "1",
+      String(policy.idleTtlMs),
+    ],
+    blacklistJti,
+  );
+  const result = evaluation.bucket;
 
   return {
     allowed: result[0] === 1,
     remaining: result[1],
     retryAfterMs: result[2],
+    revoked: evaluation.revoked,
   };
 };
 
@@ -311,7 +320,10 @@ export const createRateLimitMiddleware = (options: RateLimitOptions) => {
   const failureMode = options.failureMode ?? "open";
 
   return async (req: Request, res: Response, next: NextFunction) => {
-    const identity = getRateLimitIdentity(req, identityStrategy);
+    const { identity, authContext, blacklistJti } = getRateLimitIdentity(
+      req,
+      identityStrategy,
+    );
     if (!identity) {
       logRateLimiterFailure(
         `Rate limiter '${policy.namespace}' could not determine the client identity`,
@@ -327,7 +339,20 @@ export const createRateLimitMiddleware = (options: RateLimitOptions) => {
     }
 
     try {
-      const result = await consumeRateLimitToken(identity, policy);
+      const result = await consumeRateLimitToken(
+        identity,
+        policy,
+        blacklistJti,
+      );
+
+      if (authContext && blacklistJti) {
+        authContext.blacklistChecked = true;
+        authContext.revoked = result.revoked;
+        if (!result.revoked && authContext.principal && authContext.token) {
+          req.user = authContext.principal.user;
+          req.token = authContext.token;
+        }
+      }
 
       if (!result.allowed) {
         const retryAfterSeconds = Math.max(

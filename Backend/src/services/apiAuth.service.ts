@@ -11,69 +11,11 @@ import {
   generateRefreshToken,
   generateToken,
   verifyRefreshToken,
-  verifyToken,
 } from "../utils/jwt";
-
-// ─── In-process Secure JWT cache ────────────────────────────────────────────────
-// Key: full raw token string (ensures ONLY tokens that passed HMAC verification are cached)
-// TTL: 60 seconds
-const JWT_CACHE_TTL_MS = 60_000;
-const JWT_CACHE_MAX = 10_000;
-type AuthenticatedUser = {
-  id: string;
-  email: string;
-  name: string | null;
-  status: boolean;
-};
-type JwtCacheEntry = {
-  payload: AuthenticatedUser;
-  jti: string;
-  expiresAt: number;
-};
-const _jwtCache = new Map<string, JwtCacheEntry>();
-
-function jwtCacheGet(token: string) {
-  const entry = _jwtCache.get(token);
-  if (!entry) return null;
-  if (Date.now() > entry.expiresAt) {
-    _jwtCache.delete(token);
-    return null;
-  }
-  return entry;
-}
-
-function jwtCacheSet(
-  token: string,
-  payload: AuthenticatedUser,
-  jti: string,
-  tokenExpSeconds?: number,
-) {
-  if (_jwtCache.size >= JWT_CACHE_MAX) {
-    const firstKey = _jwtCache.keys().next().value;
-    if (firstKey) _jwtCache.delete(firstKey);
-  }
-
-  const now = Date.now();
-  const defaultCacheExpiresAt = now + JWT_CACHE_TTL_MS;
-
-  // 🛡️ BẢO VỆ: Cache TTL không bao giờ được vượt quá exp của token
-  const tokenExpiresAtMs = tokenExpSeconds
-    ? tokenExpSeconds * 1000
-    : defaultCacheExpiresAt;
-  const actualExpiresAt = Math.min(defaultCacheExpiresAt, tokenExpiresAtMs);
-  // Nếu token đã hết hạn hoặc chỉ còn < 1ms thì không lưu vào cache
-  if (actualExpiresAt <= now) return;
-
-  _jwtCache.set(token, {
-    payload,
-    jti,
-    expiresAt: actualExpiresAt,
-  });
-}
-
-function jwtCacheDelete(token: string) {
-  _jwtCache.delete(token);
-}
+import {
+  evictAccessToken,
+  verifyAccessTokenCached,
+} from "./accessToken.service";
 
 export const apiAuthService = {
   login: async ({ email, password }: LoginData) => {
@@ -169,40 +111,18 @@ export const apiAuthService = {
   getProfile: async (token: string) => {
     if (!token) return false;
 
-    // Cache skips repeated HMAC work, but every request still checks the shared
-    // blacklist so revocation is respected across all application instances.
-    const cached = jwtCacheGet(token);
-    if (cached) {
-      const isRevoked = await redis.exists(`blacklist_token:${cached.jti}`);
-      if (isRevoked) {
-        jwtCacheDelete(token);
-        return false;
-      }
-      return cached.payload;
-    }
+    const principal = verifyAccessTokenCached(token);
+    if (!principal) return false;
 
-    // 2. SLOW PATH (Cache MISS): Mandatory HMAC signature verification with JWT_SECRET
-    const decoded = verifyToken(token);
-    if (!decoded) return false;
-
-    const validJti = (decoded as JwtPayLoad & { jti: string })?.jti;
-    if (!validJti) return false;
-
-    // 3. Check Redis blacklist for revoked tokens
-    const isRevoked = await redis.exists(`blacklist_token:${validJti}`);
+    // Standalone callers (for example WebSocket authentication) still perform
+    // a strongly consistent revocation check. HTTP middleware pipelines this
+    // EXISTS with its token-bucket command and reuses the resulting context.
+    const isRevoked = await redis.exists(`blacklist_token:${principal.jti}`);
     if (isRevoked) {
+      evictAccessToken(token);
       return false;
     }
-
-    const { id, email, name, status } = decoded as Partial<JwtPayLoad>;
-    if (!id || !email || status === false) return false;
-
-    const payload = { id, email, name: name ?? null, status: status ?? true };
-    // Lấy trường exp từ token vừa decode
-    const tokenExp = (decoded as { exp?: number })?.exp;
-    // 4. Verification successful -> Store raw token string in memory cache
-    jwtCacheSet(token, payload, validJti, tokenExp);
-    return payload;
+    return principal.user;
   },
   logout: async (token: string, userId: string) => {
     const decoded = decodeToken(token);
@@ -210,7 +130,7 @@ export const apiAuthService = {
     const now = Math.floor(Date.now() / 1000);
     const ttl = (decoded as { exp: number }).exp - now;
     // Evict raw token from in-process cache
-    jwtCacheDelete(token);
+    evictAccessToken(token);
     const blacklist = await redis.set(
       `blacklist_token:${jti}`,
       JSON.stringify({
@@ -227,21 +147,26 @@ export const apiAuthService = {
     const decoded = verifyRefreshToken(refreshToken);
     if (!decoded) return false;
 
-    // check refreshToken in DB
     const jti = (decoded as { jti: string }).jti;
     const userId = (decoded as { id: string }).id;
+    if (!jti || !userId) return false;
 
-    // const RefreshTokenFromRedis = await redis.get(`refresh_token:${jti}`);
-    // if (!RefreshTokenFromRedis) {
-    //   return false;
-    // }
-    // 🛡️ ATOMIC: Lấy dữ liệu VÀ xóa token cũ ngay lập tức trong 1 lệnh duy nhất!
-    // Request nào đến trước sẽ lấy được data. Request thứ 2 đến đồng thời sẽ nhận về null ngay.
+    // Atomically consume the old refresh token. Of concurrent requests using
+    // the same token, only the first one can rotate it.
     const oldTokenData = await redis.getDel(`refresh_token:${jti}`);
-    if (!oldTokenData) {
-      // Token không tồn tại hoặc ĐÃ ĐƯỢC TIÊU THỤ bởi 1 request song song trước đó
+    if (!oldTokenData) return false;
+
+    try {
+      const storedToken = JSON.parse(oldTokenData) as {
+        userId?: string;
+        jti?: string;
+      };
+      if (storedToken.userId !== userId || storedToken.jti !== jti)
+        return false;
+    } catch {
       return false;
     }
+
     const payload = {
       id: userId,
       email: (decoded as JwtPayLoad).email,
@@ -252,10 +177,11 @@ export const apiAuthService = {
     const newRefreshToken = generateRefreshToken(payload);
     const jtiRefreshToken = decodeToken(newRefreshToken);
 
-    //add new jti to Redis
     const newJti = (jtiRefreshToken as { jti: string })?.jti;
     const now = Math.floor(Date.now() / 1000);
     const ttl = (jtiRefreshToken as { exp: number })?.exp - now;
+    if (!newJti || !Number.isFinite(ttl) || ttl <= 0) return false;
+
     await redis.set(
       `refresh_token:${newJti}`,
       JSON.stringify({

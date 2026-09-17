@@ -5,6 +5,20 @@ const developmentSessionSecret = "local-development-session-secret";
 const configuredSessionSecret = process.env.SESSION_SECRET?.trim();
 const configuredSessionTtlMs = Number(process.env.SESSION_TTL_MS);
 
+const positiveNumberFromEnv = (value: string | undefined, fallback: number) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const httpKeepAliveTimeoutMs = positiveNumberFromEnv(
+  process.env.HTTP_KEEP_ALIVE_TIMEOUT_MS,
+  65_000,
+);
+const httpHeadersTimeoutMs = Math.max(
+  positiveNumberFromEnv(process.env.HTTP_HEADERS_TIMEOUT_MS, 66_000),
+  httpKeepAliveTimeoutMs + 1_000,
+);
+
 if (
   isProduction &&
   (!configuredSessionSecret ||
@@ -39,6 +53,8 @@ export const runtimeConfig = {
     Number.isFinite(configuredSessionTtlMs) && configuredSessionTtlMs > 0
       ? configuredSessionTtlMs
       : 8 * 60 * 60 * 1000,
+  httpKeepAliveTimeoutMs,
+  httpHeadersTimeoutMs,
   allowedOrigins:
     configuredOrigins.length > 0 ? configuredOrigins : developmentOrigins,
 } as const;

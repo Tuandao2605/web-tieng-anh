@@ -103,7 +103,9 @@ services:
     volumes:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      # Keep Nginx on the IPv4 gateway. Docker Desktop may resolve its special
+      # host.docker.internal name to an unreachable IPv6 address as well.
+      - "backend-host.internal:host-gateway"
 
 volumes:
   mongo-db-data:

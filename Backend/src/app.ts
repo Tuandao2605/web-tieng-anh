@@ -140,6 +140,13 @@ const server = app.listen(port, () => {
   console.log(`Khoi dong server tai: http://localhost:${port}`);
 });
 
+// Nginx keeps upstream sockets for 60 seconds. Node's 5-second default can
+// otherwise make Nginx reuse a socket just as Node closes it, causing sporadic
+// 502 responses under concurrent traffic. headersTimeout must remain greater
+// than keepAliveTimeout so slow/incomplete requests are still bounded safely.
+server.keepAliveTimeout = runtimeConfig.httpKeepAliveTimeoutMs;
+server.headersTimeout = runtimeConfig.httpHeadersTimeoutMs;
+
 void startSchedulers().catch((error: unknown) => {
   // eslint-disable-next-line no-console
   console.error("Unable to start schedulers", error);

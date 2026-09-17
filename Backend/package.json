@@ -6,6 +6,10 @@
   "scripts": {
     "test": "npm run typecheck:test && TS_NODE_PROJECT=tsconfig.test.json node --test -r ts-node/register tests/*.test.ts tests/integration/*.test.ts",
     "test:integration": "npm run typecheck:test && TS_NODE_PROJECT=tsconfig.test.json node --test -r ts-node/register tests/integration/*.test.ts",
+    "test:redis": "npm run typecheck:test && TS_NODE_PROJECT=tsconfig.test.json node --test -r ts-node/register tests/integration/redis.integration.test.ts",
+    "test:redis:load": "npm run typecheck:test && TS_NODE_PROJECT=tsconfig.test.json node --test -r ts-node/register tests/load/redis.load.test.ts",
+    "test:product": "npm run typecheck:test && npm run build && npm --prefix ../Frontend run build && TS_NODE_PROJECT=tsconfig.test.json node --test -r ts-node/register tests/product/production-stack.test.ts",
+    "test:all": "npm run lint && npm --prefix ../Frontend run lint && npm test && npm run test:redis:load && npm run test:product",
     "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
     "build": "tsc && mkdir -p dist/src && cp -r src/generated src/views dist/src/",
     "dev": "nodemon src/app.ts",

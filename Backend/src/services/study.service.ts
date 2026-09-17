@@ -17,6 +17,23 @@ import {
   BatchSubmitAnswersInput,
   SubmitAnswerInput,
 } from "../types/study";
+import { randomUUID } from "node:crypto";
+
+const positiveNumberFromEnv = (value: string | undefined, fallback: number) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const SESSION_LOCK_TTL_MS = positiveNumberFromEnv(
+  process.env.STUDY_SESSION_LOCK_TTL_MS,
+  10_000,
+);
+const SESSION_LOCK_WAIT_MS = positiveNumberFromEnv(
+  process.env.STUDY_SESSION_LOCK_WAIT_MS,
+  SESSION_LOCK_TTL_MS + 1_000,
+);
+const sleep = (milliseconds: number) =>
+  new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -47,6 +64,50 @@ function computeNextReview(streak: number): {
 export class StudyService {
   private get redis() {
     return redisClient.getInstance();
+  }
+
+  /**
+   * Serialize mutations for one study session across every Node instance.
+   * The token-checked release cannot delete a lock that expired and was
+   * acquired by another request; the TTL is the crash-safety fallback.
+   */
+  private async withSessionLock<T>(
+    sessionKey: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const lockKey = `${sessionKey}:lock`;
+    const lockToken = randomUUID();
+    const deadline = Date.now() + SESSION_LOCK_WAIT_MS;
+
+    while (Date.now() < deadline) {
+      const acquired = await this.redis.set(lockKey, lockToken, {
+        NX: true,
+        PX: SESSION_LOCK_TTL_MS,
+      });
+      if (acquired) {
+        try {
+          return await operation();
+        } finally {
+          await this.redis
+            .eval(
+              `if redis.call("GET", KEYS[1]) == ARGV[1] then
+                 return redis.call("DEL", KEYS[1])
+               end
+               return 0`,
+              { keys: [lockKey], arguments: [lockToken] },
+            )
+            .catch((error: unknown) => {
+              // The lock TTL prevents a permanent deadlock if Redis becomes
+              // unavailable while the request is releasing its lock.
+              console.warn("Unable to release study-session lock", error);
+            });
+        }
+      }
+
+      await sleep(15 + Math.floor(Math.random() * 20));
+    }
+
+    throw new UpdatedError("Study session is busy, please retry", 409);
   }
 
   // ── 1. List Sets ────────────────────────────────────────────────────────────
@@ -281,190 +342,195 @@ export class StudyService {
   async submitAnswers(input: BatchSubmitAnswersInput) {
     const { userId, sessionId, setId, mode, answers } = input;
     const sessionKey = `user:${userId}:session:${sessionId}`;
-    const rawSession = await this.redis.get(sessionKey);
-    const sessionState: SessionProgressState = rawSession
-      ? JSON.parse(rawSession)
-      : {
-          sessionId,
-          userId,
-          setId,
-          mode,
-          totalCards: 0,
+    return this.withSessionLock(sessionKey, async () => {
+      const rawSession = await this.redis.get(sessionKey);
+      const sessionState: SessionProgressState = rawSession
+        ? JSON.parse(rawSession)
+        : {
+            sessionId,
+            userId,
+            setId,
+            mode,
+            totalCards: 0,
+            correctCount: 0,
+            wrongCount: 0,
+            cardProgressMap: {},
+          };
+
+      sessionState.setId = setId;
+      sessionState.mode = mode;
+      const results = answers.map(({ cardId, isCorrect }) => {
+        if (isCorrect) sessionState.correctCount += 1;
+        else sessionState.wrongCount += 1;
+
+        const now = new Date();
+        const previous = sessionState.cardProgressMap[cardId] ?? {
+          cardId,
+          streak: 0,
           correctCount: 0,
           wrongCount: 0,
-          cardProgressMap: {},
+          status: "NEW" as CardStatus,
+          nextReviewAt: now.toISOString(),
+          lastReviewedAt: now.toISOString(),
         };
+        if (isCorrect) {
+          previous.correctCount += 1;
+          previous.streak += 1;
+        } else {
+          previous.wrongCount += 1;
+          previous.streak = 0;
+        }
+        const { status, nextReviewAt } = computeNextReview(previous.streak);
+        previous.status = status;
+        previous.nextReviewAt = nextReviewAt.toISOString();
+        previous.lastReviewedAt = now.toISOString();
+        sessionState.cardProgressMap[cardId] = previous;
 
-    sessionState.setId = setId;
-    sessionState.mode = mode;
-    const results = answers.map(({ cardId, isCorrect }) => {
+        return {
+          sessionId,
+          cardId,
+          isCorrect,
+          cardProgress: previous,
+          sessionSummary: {
+            correctCount: sessionState.correctCount,
+            wrongCount: sessionState.wrongCount,
+          },
+        };
+      });
+
+      await this.redis.set(sessionKey, JSON.stringify(sessionState), {
+        EX: 86400,
+      });
+      return results;
+    });
+  }
+
+  async submitAnswer(input: SubmitAnswerInput) {
+    const { userId, sessionId, setId, mode, cardId, isCorrect } = input;
+    const sessionKey = `user:${userId}:session:${sessionId}`;
+    return this.withSessionLock(sessionKey, async () => {
+      const rawSession = await this.redis.get(sessionKey);
+
+      const sessionState: SessionProgressState = rawSession
+        ? JSON.parse(rawSession)
+        : {
+            sessionId,
+            userId,
+            setId,
+            mode,
+            totalCards: 0,
+            correctCount: 0,
+            wrongCount: 0,
+            cardProgressMap: {},
+          };
+
+      // Giữ metadata nhất quán khi answer đầu tiên đến muộn
+      sessionState.setId = setId;
+      sessionState.mode = mode;
+
+      // Cập nhật đếm toàn phiên
       if (isCorrect) sessionState.correctCount += 1;
       else sessionState.wrongCount += 1;
 
+      // Cập nhật tiến trình của card cụ thể
       const now = new Date();
-      const previous = sessionState.cardProgressMap[cardId] ?? {
+      const prev: CardProgressEntry = sessionState.cardProgressMap[cardId] ?? {
         cardId,
         streak: 0,
         correctCount: 0,
         wrongCount: 0,
-        status: "NEW" as CardStatus,
+        status: "NEW",
         nextReviewAt: now.toISOString(),
         lastReviewedAt: now.toISOString(),
       };
+
       if (isCorrect) {
-        previous.correctCount += 1;
-        previous.streak += 1;
+        prev.correctCount += 1;
+        prev.streak += 1;
       } else {
-        previous.wrongCount += 1;
-        previous.streak = 0;
+        prev.wrongCount += 1;
+        prev.streak = 0;
       }
-      const { status, nextReviewAt } = computeNextReview(previous.streak);
-      previous.status = status;
-      previous.nextReviewAt = nextReviewAt.toISOString();
-      previous.lastReviewedAt = now.toISOString();
-      sessionState.cardProgressMap[cardId] = previous;
+
+      const { status, nextReviewAt } = computeNextReview(prev.streak);
+      prev.status = status;
+      prev.nextReviewAt = nextReviewAt.toISOString();
+      prev.lastReviewedAt = now.toISOString();
+
+      sessionState.cardProgressMap[cardId] = prev;
+
+      await this.redis.set(sessionKey, JSON.stringify(sessionState), {
+        EX: 86400,
+      });
 
       return {
         sessionId,
         cardId,
         isCorrect,
-        cardProgress: previous,
+        cardProgress: prev,
         sessionSummary: {
           correctCount: sessionState.correctCount,
           wrongCount: sessionState.wrongCount,
         },
       };
     });
-
-    await this.redis.set(sessionKey, JSON.stringify(sessionState), {
-      EX: 86400,
-    });
-    return results;
-  }
-
-  async submitAnswer(input: SubmitAnswerInput) {
-    const { userId, sessionId, setId, mode, cardId, isCorrect } = input;
-    const sessionKey = `user:${userId}:session:${sessionId}`;
-    const rawSession = await this.redis.get(sessionKey);
-
-    const sessionState: SessionProgressState = rawSession
-      ? JSON.parse(rawSession)
-      : {
-          sessionId,
-          userId,
-          setId,
-          mode,
-          totalCards: 0,
-          correctCount: 0,
-          wrongCount: 0,
-          cardProgressMap: {},
-        };
-
-    // Giữ metadata nhất quán khi answer đầu tiên đến muộn
-    sessionState.setId = setId;
-    sessionState.mode = mode;
-
-    // Cập nhật đếm toàn phiên
-    if (isCorrect) sessionState.correctCount += 1;
-    else sessionState.wrongCount += 1;
-
-    // Cập nhật tiến trình của card cụ thể
-    const now = new Date();
-    const prev: CardProgressEntry = sessionState.cardProgressMap[cardId] ?? {
-      cardId,
-      streak: 0,
-      correctCount: 0,
-      wrongCount: 0,
-      status: "NEW",
-      nextReviewAt: now.toISOString(),
-      lastReviewedAt: now.toISOString(),
-    };
-
-    if (isCorrect) {
-      prev.correctCount += 1;
-      prev.streak += 1;
-    } else {
-      prev.wrongCount += 1;
-      prev.streak = 0;
-    }
-
-    const { status, nextReviewAt } = computeNextReview(prev.streak);
-    prev.status = status;
-    prev.nextReviewAt = nextReviewAt.toISOString();
-    prev.lastReviewedAt = now.toISOString();
-
-    sessionState.cardProgressMap[cardId] = prev;
-
-    await this.redis.set(sessionKey, JSON.stringify(sessionState), {
-      EX: 86400,
-    });
-
-    return {
-      sessionId,
-      cardId,
-      isCorrect,
-      cardProgress: prev,
-      sessionSummary: {
-        correctCount: sessionState.correctCount,
-        wrongCount: sessionState.wrongCount,
-      },
-    };
   }
 
   // ── 8. Sync Session Progress (Redis → DB) ────────────────────────────────────
 
   async syncProgress(userId: string, sessionId: string) {
     const sessionKey = `user:${userId}:session:${sessionId}`;
+    return this.withSessionLock(sessionKey, async () => {
+      // MongoDB is the durable idempotency authority. This check also covers the
+      // crash window where the transaction committed but Redis cleanup did not.
+      const existingSession = await userProgressRepository.findSyncedSession(
+        userId,
+        sessionId,
+      );
+      if (existingSession) {
+        await this.redis.del(sessionKey);
+        return existingSession;
+      }
 
-    // MongoDB is the durable idempotency authority. This check also covers the
-    // crash window where the transaction committed but Redis cleanup did not.
-    const existingSession = await userProgressRepository.findSyncedSession(
-      userId,
-      sessionId,
-    );
-    if (existingSession) {
+      const rawSession = await this.redis.get(sessionKey);
+
+      if (!rawSession) {
+        throw new UpdatedError("Study session expired or not found", 404);
+      }
+
+      const sessionState: SessionProgressState = JSON.parse(rawSession);
+      const updates = Object.values(sessionState.cardProgressMap).map((item) => ({
+        userId,
+        cardId: item.cardId,
+        status: item.status,
+        streak: item.streak,
+        correctCount: item.correctCount,
+        wrongCount: item.wrongCount,
+        nextReviewAt: new Date(item.nextReviewAt),
+        lastReviewedAt: new Date(item.lastReviewedAt),
+      }));
+
+      const totalCards = updates.length;
+      const score =
+        totalCards > 0
+          ? Math.round((sessionState.correctCount / totalCards) * 100)
+          : 0;
+
+      const savedSession = await userProgressRepository.syncSessionProgress(
+        userId,
+        sessionId,
+        sessionState.setId,
+        sessionState.mode,
+        score,
+        totalCards,
+        updates,
+      );
+
+      // Xóa session khỏi Redis sau khi sync thành công
       await this.redis.del(sessionKey);
-      return existingSession;
-    }
 
-    const rawSession = await this.redis.get(sessionKey);
-
-    if (!rawSession) {
-      throw new UpdatedError("Study session expired or not found", 404);
-    }
-
-    const sessionState: SessionProgressState = JSON.parse(rawSession);
-    const updates = Object.values(sessionState.cardProgressMap).map((item) => ({
-      userId,
-      cardId: item.cardId,
-      status: item.status,
-      streak: item.streak,
-      correctCount: item.correctCount,
-      wrongCount: item.wrongCount,
-      nextReviewAt: new Date(item.nextReviewAt),
-      lastReviewedAt: new Date(item.lastReviewedAt),
-    }));
-
-    const totalCards = updates.length;
-    const score =
-      totalCards > 0
-        ? Math.round((sessionState.correctCount / totalCards) * 100)
-        : 0;
-
-    const savedSession = await userProgressRepository.syncSessionProgress(
-      userId,
-      sessionId,
-      sessionState.setId,
-      sessionState.mode,
-      score,
-      totalCards,
-      updates,
-    );
-
-    // Xóa session khỏi Redis sau khi sync thành công
-    await this.redis.del(sessionKey);
-
-    return savedSession;
+      return savedSession;
+    });
   }
 }
 

@@ -1,0 +1,126 @@
+name: english-learning-product-test
+
+services:
+  mongo-key-init:
+    image: mongo:7.0
+    command:
+      - bash
+      - -ec
+      - |
+        if [ ! -f /opt/keyfile/mongo.key ]; then
+          openssl rand -base64 756 > /opt/keyfile/mongo.key
+          chmod 400 /opt/keyfile/mongo.key
+          chown 999:999 /opt/keyfile/mongo.key
+        fi
+    volumes:
+      - mongo-key:/opt/keyfile
+
+  mongo:
+    image: mongo:7.0
+    command:
+      - mongod
+      - --port
+      - "37017"
+      - --replSet
+      - rs0
+      - --bind_ip_all
+      - --keyFile
+      - /opt/keyfile/mongo.key
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: product-test-password
+    ports:
+      - "127.0.0.1:37017:37017"
+    volumes:
+      - mongo-data:/data/db
+      - mongo-key:/opt/keyfile:ro
+    depends_on:
+      mongo-key-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mongosh",
+          "--quiet",
+          "--host",
+          "localhost:37017",
+          "-u",
+          "root",
+          "-p",
+          "product-test-password",
+          "--authenticationDatabase",
+          "admin",
+          "--eval",
+          "db.adminCommand('ping').ok",
+        ]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  mongo-replica-init:
+    image: mongo:7.0
+    depends_on:
+      mongo:
+        condition: service_healthy
+    command:
+      - bash
+      - -ec
+      - |
+        mongosh --quiet --host mongo:37017 \
+          -u root -p product-test-password --authenticationDatabase admin \
+          --eval '
+            try {
+              rs.status();
+            } catch (error) {
+              rs.initiate({
+                _id: "rs0",
+                members: [{ _id: 0, host: "localhost:37017" }]
+              });
+            }
+          '
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:36379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.4
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms384m -Xmx384m
+    ports:
+      - "127.0.0.1:39200:9200"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://localhost:9200/_cluster/health?wait_for_status=yellow >/dev/null",
+        ]
+      interval: 3s
+      timeout: 5s
+      retries: 60
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "127.0.0.1:38080:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    extra_hosts:
+      # A custom alias avoids Docker Desktop's special dual-stack DNS entry for
+      # host.docker.internal, whose unreachable IPv6 address causes random 502s.
+      - "backend-host.internal:host-gateway"
+    profiles: [proxy]
+
+volumes:
+  mongo-data:
+  mongo-key:

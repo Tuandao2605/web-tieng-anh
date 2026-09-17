@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response } from "express";
 import { authService } from "../services/auth.service";
 import { apiAuthService } from "../services/apiAuth.service";
+import { extractBearerToken } from "../services/accessToken.service";
 
 export const optionalAuthMiddleware = async (
   req: Request,
@@ -18,12 +19,29 @@ export const optionalAuthMiddleware = async (
       }
     }
   } else {
-    const token = req.headers["authorization"]?.split(" ").slice(-1).join();
-    const user = await apiAuthService.getProfile(token as string);
+    const context = req.authContext;
+    if (context?.blacklistChecked) {
+      if (context.principal && !context.revoked && context.token) {
+        req.user = context.principal.user;
+        req.token = context.token;
+      }
+      return next();
+    }
+
+    // Same fallback as authMiddleware for standalone mounting or a transient
+    // fail-open error in the rate limiter.
+    const token =
+      context?.token ?? extractBearerToken(req.headers.authorization);
+    const user = token ? await apiAuthService.getProfile(token) : false;
     if (user) {
       req.user = user;
+      req.token = token as string;
+    }
+    if (context) {
+      context.blacklistChecked = true;
+      context.revoked = !user && context.principal !== null;
     }
   }
 
-  next();
+  return next();
 };
