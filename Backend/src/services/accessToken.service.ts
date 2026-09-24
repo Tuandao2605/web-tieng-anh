@@ -19,6 +19,19 @@ const CACHE_MAX_ENTRIES = positiveNumberFromEnv(
   process.env.JWT_L1_CACHE_MAX_ENTRIES,
   10_000,
 );
+const AUTHORIZATION_HEADER_MAX_BYTES = positiveNumberFromEnv(
+  process.env.AUTHORIZATION_HEADER_MAX_BYTES,
+  4_096,
+);
+const JWT_MIN_LENGTH = positiveNumberFromEnv(
+  process.env.JWT_MIN_TOKEN_LENGTH,
+  64,
+);
+const JWT_MAX_LENGTH = Math.min(
+  positiveNumberFromEnv(process.env.JWT_MAX_TOKEN_LENGTH, 4_089),
+  AUTHORIZATION_HEADER_MAX_BYTES,
+);
+const JWT_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 
 type AccessTokenCacheEntry = VerifiedAccessToken & {
   cacheExpiresAt: number;
@@ -57,12 +70,28 @@ const writeCache = (token: string, principal: VerifiedAccessToken) => {
   accessTokenCache.set(token, { ...principal, cacheExpiresAt });
 };
 
-export const extractBearerToken = (authorization: string | undefined) =>
-  authorization?.match(/^Bearer\s+(\S+)$/i)?.[1] ?? null;
+export const isPlausibleAccessToken = (token: string) =>
+  token.length >= JWT_MIN_LENGTH &&
+  token.length <= JWT_MAX_LENGTH &&
+  JWT_SHAPE.test(token);
+
+export const extractBearerToken = (authorization: string | undefined) => {
+  if (
+    !authorization ||
+    Buffer.byteLength(authorization, "utf8") > AUTHORIZATION_HEADER_MAX_BYTES
+  ) {
+    return null;
+  }
+
+  const token = authorization.match(/^Bearer\s+(\S+)$/i)?.[1];
+  return token && isPlausibleAccessToken(token) ? token : null;
+};
 
 export const verifyAccessTokenCached = (
   token: string,
 ): VerifiedAccessToken | null => {
+  if (!isPlausibleAccessToken(token)) return null;
+
   const cached = readCache(token);
   if (cached) return cached;
 

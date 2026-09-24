@@ -46,7 +46,16 @@ export class StudyController {
   async listSets(req: Request, res: Response) {
     try {
       const userId = (req.user as any)?.id as string | undefined;
-      const rawJson = await studyService.listSetsRaw(userId, req.abortSignal);
+      const { cursor, limit } = req.query as unknown as {
+        cursor?: string;
+        limit: number;
+      };
+      const rawJson = await studyService.listSetsRaw(
+        userId,
+        cursor,
+        limit,
+        req.abortSignal,
+      );
       return res
         .setHeader("Content-Type", "application/json")
         .status(200)

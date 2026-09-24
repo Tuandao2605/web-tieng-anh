@@ -5,6 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "npm run typecheck:test && TS_NODE_PROJECT=tsconfig.test.json node --test -r ts-node/register tests/*.test.ts tests/integration/*.test.ts",
+    "test:unit": "npm run typecheck:test && TS_NODE_PROJECT=tsconfig.test.json node --test -r ts-node/register tests/*.test.ts",
+    "test:validator": "npm run typecheck:test && TS_NODE_PROJECT=tsconfig.test.json node --test -r ts-node/register tests/study.validator.test.ts",
     "test:integration": "npm run typecheck:test && TS_NODE_PROJECT=tsconfig.test.json node --test -r ts-node/register tests/integration/*.test.ts",
     "test:redis": "npm run typecheck:test && TS_NODE_PROJECT=tsconfig.test.json node --test -r ts-node/register tests/integration/redis.integration.test.ts",
     "test:redis:load": "npm run typecheck:test && TS_NODE_PROJECT=tsconfig.test.json node --test -r ts-node/register tests/load/redis.load.test.ts",

@@ -9,9 +9,8 @@ import studyRepository, {
 import type { CreateCardInput } from "../repositories/card.repository";
 import userProgressRepository from "../repositories/user-progress.repository";
 import { elasticsearchService } from "./elasticsearch.service";
+import { enqueueDeckSync } from "../queues/search-index.queue";
 import {
-  CardProgressEntry,
-  CardStatus,
   QuizQuestion,
   SessionProgressState,
   BatchSubmitAnswersInput,
@@ -35,35 +34,151 @@ const SESSION_LOCK_WAIT_MS = positiveNumberFromEnv(
 const sleep = (milliseconds: number) =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+const PUBLIC_SETS_VERSION_KEY = "cache:version:sets:public";
+const userSetsVersionKey = (userId: string) =>
+  `cache:version:sets:user:${userId}`;
+const setDetailVersionKey = (setId: string) =>
+  `cache:version:sets:detail:${setId}`;
 
-/**
- * Leitner-based spaced repetition:
- * - streak >= 2 → MASTERED  (review sau streak × 3 ngày)
- * - streak == 1 → LEARNING  (review sau 1 ngày)
- * - streak == 0 → LEARNING  (review hôm nay)
- */
-function computeNextReview(streak: number): {
-  status: CardStatus;
-  nextReviewAt: Date;
-} {
-  if (streak >= 2) {
-    return {
-      status: "MASTERED",
-      nextReviewAt: new Date(Date.now() + streak * 3 * 24 * 60 * 60 * 1000),
-    };
+// Redis executes this script atomically, so concurrent submissions on any Node
+// instance cannot overwrite each other. A sync lock makes submissions retry
+// instead of racing the Redis -> MongoDB handoff.
+const UPDATE_STUDY_SESSION_SCRIPT = `
+if redis.call("EXISTS", KEYS[2]) == 1 then
+  return redis.error_reply("STUDY_SESSION_BUSY")
+end
+
+local raw_session = redis.call("GET", KEYS[1])
+local session
+if raw_session then
+  session = cjson.decode(raw_session)
+else
+  session = {
+    sessionId = ARGV[1],
+    userId = ARGV[2],
+    setId = ARGV[3],
+    mode = ARGV[4],
+    totalCards = 0,
+    correctCount = 0,
+    wrongCount = 0,
+    cardProgressMap = {}
   }
-  return {
-    status: "LEARNING",
-    nextReviewAt: new Date(Date.now() + streak * 24 * 60 * 60 * 1000),
-  };
-}
+end
+
+session.setId = ARGV[3]
+session.mode = ARGV[4]
+if type(session.cardProgressMap) ~= "table" then
+  session.cardProgressMap = {}
+end
+
+local answers = cjson.decode(ARGV[5])
+local now_ms = tonumber(ARGV[6])
+local day_ms = 86400000
+local results = {}
+
+for index, answer in ipairs(answers) do
+  if answer.isCorrect then
+    session.correctCount = (session.correctCount or 0) + 1
+  else
+    session.wrongCount = (session.wrongCount or 0) + 1
+  end
+
+  local previous = session.cardProgressMap[answer.cardId]
+  if not previous then
+    previous = {
+      cardId = answer.cardId,
+      streak = 0,
+      correctCount = 0,
+      wrongCount = 0,
+      status = "NEW",
+      nextReviewAt = now_ms,
+      lastReviewedAt = now_ms
+    }
+  end
+
+  if answer.isCorrect then
+    previous.correctCount = (previous.correctCount or 0) + 1
+    previous.streak = (previous.streak or 0) + 1
+  else
+    previous.wrongCount = (previous.wrongCount or 0) + 1
+    previous.streak = 0
+  end
+
+  if previous.streak >= 2 then
+    previous.status = "MASTERED"
+    previous.nextReviewAt = now_ms + previous.streak * 3 * day_ms
+  else
+    previous.status = "LEARNING"
+    previous.nextReviewAt = now_ms + previous.streak * day_ms
+  end
+  previous.lastReviewedAt = now_ms
+  session.cardProgressMap[answer.cardId] = previous
+
+  results[index] = {
+    sessionId = ARGV[1],
+    cardId = answer.cardId,
+    isCorrect = answer.isCorrect,
+    cardProgress = {
+      cardId = previous.cardId,
+      streak = previous.streak,
+      correctCount = previous.correctCount,
+      wrongCount = previous.wrongCount,
+      status = previous.status,
+      nextReviewAt = previous.nextReviewAt,
+      lastReviewedAt = previous.lastReviewedAt
+    },
+    sessionSummary = {
+      correctCount = session.correctCount,
+      wrongCount = session.wrongCount
+    }
+  }
+end
+
+local total_cards = 0
+for _ in pairs(session.cardProgressMap) do
+  total_cards = total_cards + 1
+end
+session.totalCards = total_cards
+
+redis.call("SET", KEYS[1], cjson.encode(session), "EX", ARGV[7])
+return cjson.encode(results)
+`;
 
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 export class StudyService {
   private get redis() {
     return redisClient.getInstance();
+  }
+
+  private async invalidateSetCaches(
+    userId: string,
+    setId: string | undefined,
+    affectsPublic: boolean,
+  ) {
+    const trackers = [
+      cacheService.invalidateGetTracker(userSetsVersionKey(userId)),
+    ];
+    if (setId) {
+      trackers.push(
+        cacheService.invalidateGetTracker(setDetailVersionKey(setId)),
+      );
+    }
+    if (affectsPublic) {
+      trackers.push(cacheService.invalidateGetTracker(PUBLIC_SETS_VERSION_KEY));
+    }
+    await Promise.all(trackers);
+  }
+
+  private async scheduleDeckSync(deckId: string, mutationVersion: number) {
+    try {
+      await enqueueDeckSync(deckId, mutationVersion);
+    } catch (error) {
+      // The MongoDB write is already committed. Do not turn a temporary queue
+      // outage into a misleading failed write response; the reindex command is
+      // the operational recovery path for jobs that could not be enqueued.
+      console.warn("Unable to enqueue Elasticsearch deck sync", error);
+    }
   }
 
   /**
@@ -112,18 +227,26 @@ export class StudyService {
 
   // ── 1. List Sets ────────────────────────────────────────────────────────────
 
-  async listSetsRaw(userId?: string, signal?: AbortSignal): Promise<string> {
-    // A single cached representation is enough: this raw JSON is sent directly
-    // by the controller and avoids serializing the same list on every hit.
-    const cacheKey = userId
-      ? `sets:list:summary:v1:user:${userId}`
-      : "sets:list:summary:v1:public";
-    const tags = userId ? ["sets", `user:${userId}:sets`] : ["sets", "public"];
+  async listSetsRaw(
+    userId: string | undefined,
+    cursor: string | undefined,
+    limit: number,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const [publicVersion, userVersion] = await Promise.all([
+      cacheService.getTracker(PUBLIC_SETS_VERSION_KEY),
+      userId
+        ? cacheService.getTracker(userSetsVersionKey(userId))
+        : Promise.resolve("anonymous"),
+    ]);
+    const scope = userId ? `user:${userId}:v${userVersion}` : "public";
+    const pageCursor = cursor ?? "first";
+    const cacheKey = `sets:list:summary:v2:${scope}:public-v${publicVersion}:limit:${limit}:cursor:${pageCursor}`;
 
     return cacheService.getOrSetRawWithTag(
       cacheKey,
-      () => studyRepository.listSets(userId),
-      tags,
+      () => studyRepository.listSets(userId, cursor, limit),
+      [],
       300,
       (data) => ({
         obj: {
@@ -193,17 +316,15 @@ export class StudyService {
 
   async createSet(input: CreateSetInput) {
     const newSet = await studyRepository.createSet(input);
-    await cacheService.invalidateTag(["sets", "public"]);
-    await elasticsearchService.syncDeck(newSet.id).catch((error) => {
-      console.warn("Unable to sync created deck to Elasticsearch", error);
-    });
+    await this.invalidateSetCaches(input.userId, undefined, newSet.isPublic);
+    await this.scheduleDeckSync(newSet.id, newSet.updatedAt.getTime());
     return newSet;
   }
 
   // ── 3. Update Set ───────────────────────────────────────────────────────────
 
   async updateSet(setId: string, userId: string, input: UpdateSetInput) {
-    const updated = await studyRepository
+    const updateResult = await studyRepository
       .updateSet(setId, userId, input)
       .catch((error: unknown) => {
         if (hasErrorCode(error, "P2025"))
@@ -211,14 +332,13 @@ export class StudyService {
         throw new UpdatedError("Failed to update flashcard set", 500, error);
       });
 
-    await Promise.all([
-      cacheService.invalidateTag(["sets", `set:${setId}`]),
-      cacheService.invalidateTag(["sets", "public"]),
-    ]);
-    await elasticsearchService.syncDeck(setId).catch((error) => {
-      console.warn("Unable to sync updated deck to Elasticsearch", error);
-    });
-    return updated;
+    await this.invalidateSetCaches(
+      userId,
+      setId,
+      updateResult.wasPublic || updateResult.set.isPublic,
+    );
+    await this.scheduleDeckSync(setId, updateResult.set.updatedAt.getTime());
+    return updateResult.set;
   }
 
   // ── 4. Add Cards to Set ─────────────────────────────────────────────────────
@@ -233,14 +353,13 @@ export class StudyService {
         throw new UpdatedError("Failed to delete flashcard set", 500, error);
       });
 
-    // Public sets also appear in authenticated dashboards, so invalidate the
-    // entire sets namespace instead of leaving another user's list stale.
-    await cacheService.invalidateTag(["sets"]);
-    await elasticsearchService.syncDeck(setId).catch((error) => {
-      console.warn("Unable to remove deleted deck from Elasticsearch", error);
-    });
+    await this.invalidateSetCaches(userId, setId, deleted.isPublic);
+    await this.scheduleDeckSync(
+      setId,
+      Math.max(Date.now(), deleted.updatedAt.getTime() + 1),
+    );
 
-    return deleted;
+    return { id: deleted.id };
   }
 
   async addCardsToSet(setId: string, userId: string, cards: CreateCardInput[]) {
@@ -252,27 +371,23 @@ export class StudyService {
         throw new UpdatedError("Failed to add cards", 500, error);
       });
 
-    await Promise.all([
-      cacheService.invalidateTag(["sets", `set:${setId}`]),
-      cacheService.invalidateTag(["sets", "public"]),
-    ]);
-    await elasticsearchService.syncDeck(setId).catch((error) => {
-      console.warn("Unable to sync deck card count to Elasticsearch", error);
-    });
+    await this.invalidateSetCaches(userId, setId, updated.isPublic);
+    await this.scheduleDeckSync(setId, updated.updatedAt.getTime());
     return updated;
   }
 
   // ── 5. Get Set by ID (Cache-Aside, TTL 1h) ──────────────────────────────────
 
   async getSetById(setId: string, userId?: string, signal?: AbortSignal) {
+    const version = await cacheService.getTracker(setDetailVersionKey(setId));
     const set = await cacheService.getOrSetWithTag(
-      `set:${setId}:cards`,
+      `set:${setId}:v${version}:cards`,
       async () => {
         const set = await studyRepository.findSetById(setId);
         if (!set) throw new UpdatedError("Flashcard set not found", 404);
         return set;
       },
-      ["sets", `set:${setId}`],
+      [],
       3600,
       signal,
     );
@@ -335,145 +450,74 @@ export class StudyService {
 
   // ── 7. Submit Answer (state kept in Redis, TTL 24h) ─────────────────────────
 
-  /**
-   * Lưu cả lượt trả lời bằng đúng một Redis GET và một Redis SET. Đây là đường
-   * chính cho UI học; submitAnswer bên dưới được giữ lại để tương thích API cũ.
-   */
-  async submitAnswers(input: BatchSubmitAnswersInput) {
+  private async updateSessionAtomically(input: BatchSubmitAnswersInput) {
     const { userId, sessionId, setId, mode, answers } = input;
     const sessionKey = `user:${userId}:session:${sessionId}`;
-    return this.withSessionLock(sessionKey, async () => {
-      const rawSession = await this.redis.get(sessionKey);
-      const sessionState: SessionProgressState = rawSession
-        ? JSON.parse(rawSession)
-        : {
-            sessionId,
-            userId,
-            setId,
-            mode,
-            totalCards: 0,
-            correctCount: 0,
-            wrongCount: 0,
-            cardProgressMap: {},
-          };
-
-      sessionState.setId = setId;
-      sessionState.mode = mode;
-      const results = answers.map(({ cardId, isCorrect }) => {
-        if (isCorrect) sessionState.correctCount += 1;
-        else sessionState.wrongCount += 1;
-
-        const now = new Date();
-        const previous = sessionState.cardProgressMap[cardId] ?? {
-          cardId,
-          streak: 0,
-          correctCount: 0,
-          wrongCount: 0,
-          status: "NEW" as CardStatus,
-          nextReviewAt: now.toISOString(),
-          lastReviewedAt: now.toISOString(),
-        };
-        if (isCorrect) {
-          previous.correctCount += 1;
-          previous.streak += 1;
-        } else {
-          previous.wrongCount += 1;
-          previous.streak = 0;
-        }
-        const { status, nextReviewAt } = computeNextReview(previous.streak);
-        previous.status = status;
-        previous.nextReviewAt = nextReviewAt.toISOString();
-        previous.lastReviewedAt = now.toISOString();
-        sessionState.cardProgressMap[cardId] = previous;
-
-        return {
+    try {
+      const rawResults = await this.redis.eval(UPDATE_STUDY_SESSION_SCRIPT, {
+        keys: [sessionKey, `${sessionKey}:lock`],
+        arguments: [
           sessionId,
-          cardId,
-          isCorrect,
-          cardProgress: previous,
-          sessionSummary: {
-            correctCount: sessionState.correctCount,
-            wrongCount: sessionState.wrongCount,
-          },
+          userId,
+          setId,
+          mode,
+          JSON.stringify(answers),
+          String(Date.now()),
+          "86400",
+        ],
+      });
+      const results = JSON.parse(String(rawResults)) as Array<{
+        sessionId: string;
+        cardId: string;
+        isCorrect: boolean;
+        cardProgress: {
+          cardId: string;
+          streak: number;
+          correctCount: number;
+          wrongCount: number;
+          status: "NEW" | "LEARNING" | "MASTERED";
+          nextReviewAt: string | number;
+          lastReviewedAt: string | number;
         };
-      });
+        sessionSummary: { correctCount: number; wrongCount: number };
+      }>;
 
-      await this.redis.set(sessionKey, JSON.stringify(sessionState), {
-        EX: 86400,
-      });
-      return results;
-    });
+      return results.map((result) => ({
+        ...result,
+        cardProgress: {
+          ...result.cardProgress,
+          nextReviewAt: new Date(
+            result.cardProgress.nextReviewAt,
+          ).toISOString(),
+          lastReviewedAt: new Date(
+            result.cardProgress.lastReviewedAt,
+          ).toISOString(),
+        },
+      }));
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes("STUDY_SESSION_BUSY")
+      ) {
+        throw new UpdatedError("Study session is busy, please retry", 409);
+      }
+      throw error;
+    }
+  }
+
+  async submitAnswers(input: BatchSubmitAnswersInput) {
+    return this.updateSessionAtomically(input);
   }
 
   async submitAnswer(input: SubmitAnswerInput) {
-    const { userId, sessionId, setId, mode, cardId, isCorrect } = input;
-    const sessionKey = `user:${userId}:session:${sessionId}`;
-    return this.withSessionLock(sessionKey, async () => {
-      const rawSession = await this.redis.get(sessionKey);
-
-      const sessionState: SessionProgressState = rawSession
-        ? JSON.parse(rawSession)
-        : {
-            sessionId,
-            userId,
-            setId,
-            mode,
-            totalCards: 0,
-            correctCount: 0,
-            wrongCount: 0,
-            cardProgressMap: {},
-          };
-
-      // Giữ metadata nhất quán khi answer đầu tiên đến muộn
-      sessionState.setId = setId;
-      sessionState.mode = mode;
-
-      // Cập nhật đếm toàn phiên
-      if (isCorrect) sessionState.correctCount += 1;
-      else sessionState.wrongCount += 1;
-
-      // Cập nhật tiến trình của card cụ thể
-      const now = new Date();
-      const prev: CardProgressEntry = sessionState.cardProgressMap[cardId] ?? {
-        cardId,
-        streak: 0,
-        correctCount: 0,
-        wrongCount: 0,
-        status: "NEW",
-        nextReviewAt: now.toISOString(),
-        lastReviewedAt: now.toISOString(),
-      };
-
-      if (isCorrect) {
-        prev.correctCount += 1;
-        prev.streak += 1;
-      } else {
-        prev.wrongCount += 1;
-        prev.streak = 0;
-      }
-
-      const { status, nextReviewAt } = computeNextReview(prev.streak);
-      prev.status = status;
-      prev.nextReviewAt = nextReviewAt.toISOString();
-      prev.lastReviewedAt = now.toISOString();
-
-      sessionState.cardProgressMap[cardId] = prev;
-
-      await this.redis.set(sessionKey, JSON.stringify(sessionState), {
-        EX: 86400,
-      });
-
-      return {
-        sessionId,
-        cardId,
-        isCorrect,
-        cardProgress: prev,
-        sessionSummary: {
-          correctCount: sessionState.correctCount,
-          wrongCount: sessionState.wrongCount,
-        },
-      };
+    const [result] = await this.updateSessionAtomically({
+      userId: input.userId,
+      sessionId: input.sessionId,
+      setId: input.setId,
+      mode: input.mode,
+      answers: [{ cardId: input.cardId, isCorrect: input.isCorrect }],
     });
+    return result;
   }
 
   // ── 8. Sync Session Progress (Redis → DB) ────────────────────────────────────
@@ -499,16 +543,18 @@ export class StudyService {
       }
 
       const sessionState: SessionProgressState = JSON.parse(rawSession);
-      const updates = Object.values(sessionState.cardProgressMap).map((item) => ({
-        userId,
-        cardId: item.cardId,
-        status: item.status,
-        streak: item.streak,
-        correctCount: item.correctCount,
-        wrongCount: item.wrongCount,
-        nextReviewAt: new Date(item.nextReviewAt),
-        lastReviewedAt: new Date(item.lastReviewedAt),
-      }));
+      const updates = Object.values(sessionState.cardProgressMap).map(
+        (item) => ({
+          userId,
+          cardId: item.cardId,
+          status: item.status,
+          streak: item.streak,
+          correctCount: item.correctCount,
+          wrongCount: item.wrongCount,
+          nextReviewAt: new Date(item.nextReviewAt),
+          lastReviewedAt: new Date(item.lastReviewedAt),
+        }),
+      );
 
       const totalCards = updates.length;
       const score =

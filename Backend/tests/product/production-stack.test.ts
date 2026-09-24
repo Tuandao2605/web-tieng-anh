@@ -364,7 +364,14 @@ class ProductStack {
 
     await runCommand(
       "docker",
-      [...this.composeArguments, "down", "--volumes", "--remove-orphans"],
+      [
+        ...this.composeArguments,
+        "--profile",
+        "proxy",
+        "down",
+        "--volumes",
+        "--remove-orphans",
+      ],
       { cwd: BACKEND_DIRECTORY, allowFailure: true, timeoutMs: 60_000 },
     );
     await runCommand(
@@ -465,7 +472,15 @@ class ProductStack {
 
     await runCommand(
       "docker",
-      [...this.composeArguments, "--profile", "proxy", "up", "-d", "nginx"],
+      [
+        ...this.composeArguments,
+        "--profile",
+        "proxy",
+        "up",
+        "-d",
+        "--force-recreate",
+        "nginx",
+      ],
       { cwd: BACKEND_DIRECTORY, timeoutMs: 120_000 },
     );
     await waitForHttp(`${NGINX_URL}/api/v1/sets`, 60_000);
@@ -500,7 +515,14 @@ class ProductStack {
     await safely(() =>
       runCommand(
         "docker",
-        [...this.composeArguments, "down", "--volumes", "--remove-orphans"],
+        [
+          ...this.composeArguments,
+          "--profile",
+          "proxy",
+          "down",
+          "--volumes",
+          "--remove-orphans",
+        ],
         { cwd: BACKEND_DIRECTORY, allowFailure: true, timeoutMs: 60_000 },
       ),
     );
@@ -695,7 +717,11 @@ test(
             method: "DELETE",
             token: disposableTokens.accessToken,
           });
-          assert.equal(logout.response.status, 200, JSON.stringify(logout.body));
+          assert.equal(
+            logout.response.status,
+            200,
+            JSON.stringify(logout.body),
+          );
 
           const rejectedProfiles = await Promise.all(
             [NODE_1_URL, NODE_2_URL].map((baseUrl) =>
@@ -769,9 +795,17 @@ test(
             token: tokensB.accessToken,
           });
           assert.equal(otherUserList.response.status, 200);
-          const visibleToB = apiData<Array<{ id: string }>>(otherUserList);
+          const visibleToB = apiData<{
+            sets: Array<{ id: string }>;
+            pagination: {
+              limit: number;
+              hasMore: boolean;
+              nextCursor: string | null;
+            };
+          }>(otherUserList);
+          assert.equal(visibleToB.pagination.limit, 20);
           assert.equal(
-            visibleToB.some(({ id }) => id === privateDeck.id),
+            visibleToB.sets.some(({ id }) => id === privateDeck.id),
             false,
           );
 
@@ -821,7 +855,75 @@ test(
       );
 
       await suite.test(
-        "indexes and searches public decks through Elasticsearch",
+        "paginates set summaries with a stable cursor and versioned pages",
+        async () => {
+          const warmedPage = await jsonRequest(
+            NODE_2_URL,
+            "/api/v1/sets?limit=10",
+            { token: tokensA.accessToken },
+          );
+          assert.equal(warmedPage.response.status, 200);
+
+          const createdPages = await Promise.all(
+            Array.from({ length: 21 }, (_, index) =>
+              jsonRequest(NODE_1_URL, "/api/v1/sets", {
+                token: tokensA.accessToken,
+                body: {
+                  title: `Paginated deck ${suffix}-${index}`,
+                  isPublic: false,
+                  cards: [
+                    {
+                      term: `term-${index}`,
+                      definition: `definition-${index}`,
+                    },
+                  ],
+                },
+              }),
+            ),
+          );
+          assert.ok(
+            createdPages.every(({ response }) => response.status === 201),
+          );
+          const createdIds = new Set(
+            createdPages.map((result) => apiData<Deck>(result).id),
+          );
+
+          const firstPageResponse = await jsonRequest(
+            NODE_2_URL,
+            "/api/v1/sets?limit=10",
+            { token: tokensA.accessToken },
+          );
+          assert.equal(firstPageResponse.response.status, 200);
+          const firstPage = apiData<{
+            sets: Array<{ id: string }>;
+            pagination: { hasMore: boolean; nextCursor: string | null };
+          }>(firstPageResponse);
+          assert.equal(firstPage.sets.length, 10);
+          assert.equal(firstPage.pagination.hasMore, true);
+          assert.ok(firstPage.pagination.nextCursor);
+          assert.ok(firstPage.sets.every(({ id }) => createdIds.has(id)));
+
+          const secondPageResponse = await jsonRequest(
+            NODE_1_URL,
+            `/api/v1/sets?limit=10&cursor=${firstPage.pagination.nextCursor}`,
+            { token: tokensA.accessToken },
+          );
+          assert.equal(secondPageResponse.response.status, 200);
+          const secondPage = apiData<{
+            sets: Array<{ id: string }>;
+            pagination: { hasMore: boolean; nextCursor: string | null };
+          }>(secondPageResponse);
+          assert.equal(secondPage.sets.length, 10);
+          assert.equal(
+            new Set([...firstPage.sets, ...secondPage.sets].map(({ id }) => id))
+              .size,
+            20,
+          );
+        },
+      );
+
+      await suite.test(
+        "indexes and searches public decks through Elasticsearch jobs",
         async () => {
           const searchTerm = `searchable-${suffix}`;
           const created = await jsonRequest(NODE_2_URL, "/api/v1/sets", {
@@ -1135,9 +1237,17 @@ test(
           // Repeatedly evict the cache key to force MongoDB query on each sample
           const coldSamples = 15;
           const coldLatencies: number[] = [];
-          const userCacheKey = `sets:list:summary:v1:user:${userA.id}`;
+          const userVersionKey = `cache:version:sets:user:${userA.id}`;
           for (let index = 0; index < coldSamples; index += 1) {
-            await stack.redis?.del(userCacheKey);
+            await stack.redis?.incr(userVersionKey);
+            await stack.redis?.publish(
+              "cache:l1:invalidate:v1",
+              JSON.stringify({
+                source: "product-benchmark",
+                type: "key",
+                value: userVersionKey,
+              }),
+            );
             const start = performance.now();
             const res = await jsonRequest(NODE_1_URL, "/api/v1/sets", {
               token: tokensA.accessToken,
@@ -1210,6 +1320,52 @@ test(
           );
           assert.ok(metrics.p50Ms >= 100, `p50=${metrics.p50Ms}`);
           assert.ok(metrics.p99Ms <= 2_500, `p99=${metrics.p99Ms}`);
+        },
+      );
+
+      await suite.test(
+        "rejects abusive auth traffic and oversized authorization at Nginx",
+        async () => {
+          const oversizedHeader = await jsonRequest(NGINX_URL, "/api/v1/sets", {
+            headers: {
+              Authorization: `Bearer ${"a".repeat(4_090)}`,
+            },
+          });
+          assert.equal(oversizedHeader.response.status, 431);
+          assert.equal(
+            oversizedHeader.response.headers.get("x-test-upstream"),
+            null,
+            "Nginx must reject the request before selecting a Node upstream",
+          );
+
+          const attempts = await Promise.all(
+            Array.from({ length: 100 }, (_, index) =>
+              jsonRequest(NGINX_URL, "/api/v1/auth/login", {
+                body: {
+                  email: `missing-${suffix}-${index}@example.com`,
+                  password: "product-test-password",
+                },
+              }),
+            ),
+          );
+          const statuses = attempts.map(({ response }) => response.status);
+          assert.ok(
+            statuses.includes(429),
+            `expected Nginx 429 responses, received ${JSON.stringify(statuses)}`,
+          );
+          assert.ok(
+            statuses.includes(400),
+            `expected some admitted requests to reach Node, received ${JSON.stringify(statuses)}`,
+          );
+          assert.ok(
+            attempts
+              .filter(({ response }) => response.status === 429)
+              .every(
+                ({ response }) =>
+                  response.headers.get("x-test-upstream") === null,
+              ),
+            "edge-limited requests must not reach a Node upstream",
+          );
         },
       );
 

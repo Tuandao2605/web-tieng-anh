@@ -24,6 +24,11 @@ import { closeSocketServer } from "./web-socket/socket-server";
 import { csrfProtection } from "./middlewares/csrf.middleware";
 import type { ErrorWithStatus } from "./types/error";
 import { attachAbortSignal } from "./middlewares/abortSignal";
+import {
+  closeSearchIndexWorker,
+  startSearchIndexWorker,
+} from "./workers/search-index.worker";
+import { closeSearchIndexQueue } from "./queues/search-index.queue";
 
 const app: Application = express();
 const { isProduction, port, sessionSecret, sessionCookieName, sessionTtlMs } =
@@ -151,6 +156,7 @@ void startSchedulers().catch((error: unknown) => {
   // eslint-disable-next-line no-console
   console.error("Unable to start schedulers", error);
 });
+startSearchIndexWorker();
 
 let isShuttingDown = false;
 const shutdown = async (signal: NodeJS.Signals) => {
@@ -178,8 +184,10 @@ const shutdown = async (signal: NodeJS.Signals) => {
   // Request handlers no longer need shared resources after HTTP has drained.
   const resourceResults = await Promise.allSettled([
     stopSchedulers(),
-    prisma.$disconnect(),
+    closeSearchIndexWorker(),
+    closeSearchIndexQueue(),
   ]);
+  const databaseResults = await Promise.allSettled([prisma.$disconnect()]);
   const bullMqResult = await Promise.allSettled([closeBullMqConnections()]);
   const redisResult = await Promise.allSettled([closeRedisConnections()]);
 
@@ -187,6 +195,7 @@ const shutdown = async (signal: NodeJS.Signals) => {
   const failed = [
     ...drainResults,
     ...resourceResults,
+    ...databaseResults,
     ...bullMqResult,
     ...redisResult,
   ].filter((result) => result.status === "rejected");

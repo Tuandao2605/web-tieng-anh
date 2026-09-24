@@ -12,6 +12,8 @@ model FlashcardSet {
 
   @@index([userId, isPublic])
   @@index([isPublic, title])
+  @@index([isPublic, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([userId, createdAt(sort: Desc), id(sort: Desc)])
   @@map("flashcard_sets")
 }
 

@@ -71,6 +71,16 @@ export const searchPublicDecksSchema = z.object({
   }),
 });
 
+export const listSetsSchema = z.object({
+  query: z.object({
+    cursor: z
+      .string()
+      .length(24, "Cursor must be a MongoDB ObjectId")
+      .optional(),
+    limit: z.coerce.number().int().min(1).max(50).default(20),
+  }),
+});
+
 export const submitAnswerSchema = z.object({
   body: z.object({
     sessionId: z.string().min(1, "Session ID is required"),

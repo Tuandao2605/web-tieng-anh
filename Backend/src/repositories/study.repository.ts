@@ -26,7 +26,11 @@ class StudyRepository extends BaseRepository<
     super(prisma.flashcardSet);
   }
 
-  async listSets(userId?: string) {
+  async listSets(
+    userId: string | undefined,
+    cursor: string | undefined,
+    limit: number,
+  ) {
     const sets = await prisma.flashcardSet.findMany({
       where: userId
         ? { OR: [{ isPublic: true }, { userId }] }
@@ -41,13 +45,28 @@ class StudyRepository extends BaseRepository<
         updatedAt: true,
         _count: { select: { cards: true } },
       },
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit + 1,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
     });
 
-    return sets.map(({ _count, ...set }) => ({
+    const hasMore = sets.length > limit;
+    const page = hasMore ? sets.slice(0, limit) : sets;
+    const summaries = page.map(({ _count, ...set }) => ({
       ...set,
       cardCount: _count.cards,
     }));
+
+    return {
+      sets: summaries,
+      pagination: {
+        limit,
+        hasMore,
+        nextCursor: hasMore
+          ? (summaries[summaries.length - 1]?.id ?? null)
+          : null,
+      },
+    };
   }
 
   async searchPublicSets(keyword: string, page: number, limit: number) {
@@ -128,7 +147,7 @@ class StudyRepository extends BaseRepository<
     return prisma.$transaction(async (tx) => {
       const existingSet = await tx.flashcardSet.findUnique({
         where: { id: setId },
-        select: { id: true, userId: true },
+        select: { id: true, userId: true, isPublic: true },
       });
       if (!existingSet || existingSet.userId !== userId) {
         const error = new Error("Flashcard set not found") as Error & {
@@ -205,10 +224,11 @@ class StudyRepository extends BaseRepository<
         }
       }
 
-      return tx.flashcardSet.findUniqueOrThrow({
+      const set = await tx.flashcardSet.findUniqueOrThrow({
         where: { id: setId },
         include: { cards: true },
       });
+      return { set, wasPublic: existingSet.isPublic };
     });
   }
 
@@ -227,7 +247,7 @@ class StudyRepository extends BaseRepository<
 
     return prisma.flashcardSet.delete({
       where: { id: setId },
-      select: { id: true },
+      select: { id: true, isPublic: true, updatedAt: true },
     });
   }
 

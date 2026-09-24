@@ -27,6 +27,7 @@ import {
   submitAnswerSchema,
   submitAnswersSchema,
   syncProgressSchema,
+  listSetsSchema,
 } from "../../validators/study.validator";
 
 const router = express.Router();
@@ -95,7 +96,12 @@ router.put("/posts", postsController.update);
 
 // ─── Study / Flashcard Sets ───────────────────────────────────────────────────
 
-router.get("/sets", optionalAuthMiddleware, studyController.listSets);
+router.get(
+  "/sets",
+  optionalAuthMiddleware,
+  validate(listSetsSchema),
+  studyController.listSets,
+);
 router.post(
   "/sets",
   authMiddleware,

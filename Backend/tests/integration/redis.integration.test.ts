@@ -17,6 +17,7 @@ test("Redis-backed application behavior", async (suite) => {
   const { cacheService } = await import("../../src/services/cache.service");
   const { consumeRateLimitToken } =
     await import("../../src/middlewares/rateLimit.middleware");
+  const { StudyService } = await import("../../src/services/study.service");
   const redis = redisClient.getInstance();
 
   try {
@@ -77,6 +78,63 @@ test("Redis-backed application behavior", async (suite) => {
 
         await cacheService.getOrSetWithTag(key, fetchValue, tags, 30);
         assert.equal(fetches, 2);
+      },
+    );
+
+    await suite.test(
+      "study-session Lua updates remain atomic across concurrent submissions",
+      async () => {
+        const service = new StudyService();
+        const userId = "64b000000000000000000011";
+        const setId = "64b000000000000000000012";
+        const sessionId = `lua-session-${Date.now()}`;
+        const answers = Array.from({ length: 300 }, (_, index) => ({
+          cardId: `64b000000000000000000${String(100 + (index % 10)).slice(-3)}`,
+          isCorrect: index % 3 !== 0,
+        }));
+
+        await Promise.all(
+          answers.map(({ cardId, isCorrect }) =>
+            service.submitAnswer({
+              userId,
+              sessionId,
+              setId,
+              mode: "QUIZ",
+              cardId,
+              isCorrect,
+            }),
+          ),
+        );
+
+        const raw = await redis.get(`user:${userId}:session:${sessionId}`);
+        assert.ok(raw);
+        const state = JSON.parse(raw) as {
+          correctCount: number;
+          wrongCount: number;
+          totalCards: number;
+          cardProgressMap: Record<
+            string,
+            { correctCount: number; wrongCount: number }
+          >;
+        };
+        assert.equal(state.correctCount, 200);
+        assert.equal(state.wrongCount, 100);
+        assert.equal(state.totalCards, 10);
+        assert.equal(Object.keys(state.cardProgressMap).length, 10);
+        assert.equal(
+          Object.values(state.cardProgressMap).reduce(
+            (total, progress) => total + progress.correctCount,
+            0,
+          ),
+          200,
+        );
+        assert.equal(
+          Object.values(state.cardProgressMap).reduce(
+            (total, progress) => total + progress.wrongCount,
+            0,
+          ),
+          100,
+        );
       },
     );
 

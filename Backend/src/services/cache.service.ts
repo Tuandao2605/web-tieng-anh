@@ -29,6 +29,29 @@ const LOCK_WAIT_MS = positiveNumberFromEnv(
 );
 const INVALIDATION_CHANNEL = "cache:l1:invalidate:v1";
 const INSTANCE_ID = `${process.pid}:${randomUUID()}`;
+const INVALIDATE_TAGS_SCRIPT = `
+local cache_keys = {}
+local seen = {}
+
+for _, tag_key in ipairs(KEYS) do
+  local members = redis.call("SMEMBERS", tag_key)
+  for _, cache_key in ipairs(members) do
+    if not seen[cache_key] then
+      seen[cache_key] = true
+      table.insert(cache_keys, cache_key)
+    end
+  end
+end
+
+for _, cache_key in ipairs(cache_keys) do
+  redis.call("UNLINK", cache_key)
+end
+for _, tag_key in ipairs(KEYS) do
+  redis.call("UNLINK", tag_key)
+end
+
+return cache_keys
+`;
 
 type L1Entry = {
   value: unknown;
@@ -58,7 +81,7 @@ let l1Bytes = 0;
 // Prevents a thundering herd inside one Node.js process.
 const inFlight = new Map<string, Promise<unknown>>();
 
-const tagName = (tags: string[]) => `tag:${tags.join(":")}`;
+const tagName = (tag: string) => `tag:${tag}`;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // A cache fill is shared by multiple requests. Abort only this caller's wait;
@@ -134,7 +157,7 @@ const writeL1 = <T>(
     removeL1Key(oldestKey);
   }
 
-  const normalizedTags = tags.length > 0 ? [tagName(tags)] : [];
+  const normalizedTags = tags.map(tagName);
   // Small jitter avoids all L1 entries expiring on the exact same millisecond.
   const ttlMs = Math.min(L1_TTL_MS, ttlSeconds * 1_000);
   const jitteredTtlMs = Math.max(
@@ -289,9 +312,10 @@ const loadCachedValue = async <T>(
       if (tags.length > 0) {
         const multi = redis.multi();
         multi.set(key, raw, { EX: ttl });
-        const redisTagName = tagName(tags);
-        multi.sAdd(redisTagName, key);
-        multi.expire(redisTagName, ttl);
+        for (const tag of tags.map(tagName)) {
+          multi.sAdd(tag, key);
+          multi.expire(tag, ttl);
+        }
         await multi.exec();
       } else {
         await redis.set(key, raw, { EX: ttl });
@@ -453,37 +477,25 @@ export const cacheService = {
   },
 
   async invalidateTag(tags: string[]) {
-    const prefix = tagName(tags);
-    removeL1ByTagPrefix(prefix);
-    const allKeysToDelete = new Set<string>();
+    const tagKeys = tags.map(tagName);
+    for (const tagKey of tagKeys) removeL1ByTagPrefix(tagKey);
+    if (tagKeys.length === 0) return;
 
-    let cursor = "0";
-    do {
-      const reply = await redis.scan(cursor, {
-        MATCH: `${prefix}*`,
-        COUNT: 100,
-      });
-      cursor = reply.cursor;
-      const foundTags = reply.keys;
-
-      if (foundTags.length > 0) {
-        const memberResults = await Promise.all(
-          foundTags.map((foundTag) => redis.sMembers(foundTag)),
-        );
-        foundTags.forEach((foundTag, index) => {
-          memberResults[index]!.forEach((memberKey) => {
-            allKeysToDelete.add(memberKey);
-            removeL1Key(memberKey);
-          });
-          allKeysToDelete.add(foundTag);
-        });
-      }
-    } while (cursor !== "0");
-
-    if (allKeysToDelete.size > 0) {
-      await redis.unlink(Array.from(allKeysToDelete));
+    // One atomic Redis command reads the exact tag sets and unlinks their
+    // members. There is no keyspace SCAN and no fill/invalidation race between
+    // separate SMEMBERS and UNLINK round-trips.
+    const removedKeys = (await redis.eval(INVALIDATE_TAGS_SCRIPT, {
+      keys: tagKeys,
+      arguments: [],
+    })) as string[];
+    for (const key of removedKeys) {
+      removeL1Key(key);
     }
-    await publishInvalidation({ type: "tag-prefix", value: prefix });
+    await Promise.all(
+      tagKeys.map((tagKey) =>
+        publishInvalidation({ type: "tag-prefix", value: tagKey }),
+      ),
+    );
   },
 
   async writeThrough<T>(
