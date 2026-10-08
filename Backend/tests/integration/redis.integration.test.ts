@@ -16,7 +16,7 @@ test("Redis-backed application behavior", async (suite) => {
     await import("../../src/utils/redis");
   const { cacheService } = await import("../../src/services/cache.service");
   const { consumeRateLimitToken } =
-    await import("../../src/middlewares/rateLimit.middleware");
+    await import("../../src/services/rateLimit.service");
   const { StudyService } = await import("../../src/services/study.service");
   const redis = redisClient.getInstance();
 

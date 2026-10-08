@@ -19,6 +19,10 @@ const L1_MAX_BYTES = positiveNumberFromEnv(
   process.env.L1_CACHE_MAX_BYTES,
   32 * 1024 * 1024,
 );
+const L1_SWR_RETRY_BACKOFF_MS = positiveNumberFromEnv(
+  process.env.L1_CACHE_SWR_RETRY_BACKOFF_MS,
+  1_000,
+);
 const LOCK_TTL_MS = positiveNumberFromEnv(
   process.env.CACHE_LOCK_TTL_MS,
   10_000,
@@ -56,9 +60,20 @@ return cache_keys
 type L1Entry = {
   value: unknown;
   expiresAt: number;
+  staleUntil: number;
+  refreshAfter: number;
   size: number;
   tags: string[];
 };
+
+type L1Read<T> =
+  | { hit: false }
+  | {
+      hit: true;
+      value: T;
+      isStale: boolean;
+      shouldRefresh: boolean;
+    };
 
 type L1InvalidationMessage =
   | { source: string; type: "key"; value: string }
@@ -68,10 +83,17 @@ type CacheLoadOptions<T> = {
   key: string;
   fetchFn: () => Promise<T>;
   ttl: number;
+  staleWhileRevalidateMs?: number;
   tags?: string[];
   encode: (value: T) => string;
   decode: (raw: string) => T;
   shouldCache?: (value: T) => boolean;
+};
+
+type InFlightLoad = {
+  promise: Promise<unknown>;
+  tags: string[];
+  invalidated: boolean;
 };
 
 const l1Cache = new Map<string, L1Entry>();
@@ -79,7 +101,7 @@ const l1TagKeys = new Map<string, Set<string>>();
 let l1Bytes = 0;
 
 // Prevents a thundering herd inside one Node.js process.
-const inFlight = new Map<string, Promise<unknown>>();
+const inFlight = new Map<string, InFlightLoad>();
 
 const tagName = (tag: string) => `tag:${tag}`;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -124,10 +146,21 @@ const removeL1Key = (key: string) => {
   }
 };
 
-const readL1 = <T>(key: string): { hit: true; value: T } | { hit: false } => {
+const invalidateL1Key = (key: string) => {
+  for (const flightKey of [key, `tracker:${key}`]) {
+    const flight = inFlight.get(flightKey);
+    if (!flight) continue;
+    flight.invalidated = true;
+    inFlight.delete(flightKey);
+  }
+  removeL1Key(key);
+};
+
+const readL1 = <T>(key: string): L1Read<T> => {
   const entry = l1Cache.get(key);
   if (!entry) return { hit: false };
-  if (entry.expiresAt <= Date.now()) {
+  const now = Date.now();
+  if (entry.staleUntil <= now) {
     removeL1Key(key);
     return { hit: false };
   }
@@ -135,7 +168,19 @@ const readL1 = <T>(key: string): { hit: true; value: T } | { hit: false } => {
   // Refresh insertion order to make the bounded map an LRU cache.
   l1Cache.delete(key);
   l1Cache.set(key, entry);
-  return { hit: true, value: entry.value as T };
+
+  const isStale = entry.expiresAt <= now;
+  let shouldRefresh = false;
+  if (isStale && entry.refreshAfter <= now) {
+    entry.refreshAfter = now + L1_SWR_RETRY_BACKOFF_MS;
+    shouldRefresh = true;
+  }
+  return {
+    hit: true,
+    value: entry.value as T,
+    isStale,
+    shouldRefresh,
+  };
 };
 
 const writeL1 = <T>(
@@ -144,6 +189,7 @@ const writeL1 = <T>(
   encodedSize: number,
   ttlSeconds: number,
   tags: string[] = [],
+  staleWhileRevalidateMs = 0,
 ) => {
   if (encodedSize > L1_MAX_BYTES) return;
   removeL1Key(key);
@@ -164,9 +210,15 @@ const writeL1 = <T>(
     1,
     Math.floor(ttlMs * (0.9 + Math.random() * 0.1)),
   );
+  const swrMs = Number.isFinite(staleWhileRevalidateMs)
+    ? Math.min(5 * 60_000, Math.max(0, staleWhileRevalidateMs))
+    : 0;
+  const expiresAt = Date.now() + jitteredTtlMs;
   l1Cache.set(key, {
     value,
-    expiresAt: Date.now() + jitteredTtlMs,
+    expiresAt,
+    staleUntil: expiresAt + swrMs,
+    refreshAfter: expiresAt,
     size: encodedSize,
     tags: normalizedTags,
   });
@@ -180,6 +232,13 @@ const writeL1 = <T>(
 };
 
 const removeL1ByTagPrefix = (prefix: string) => {
+  for (const [key, flight] of inFlight) {
+    if (flight.tags.some((tag) => tag.startsWith(prefix))) {
+      flight.invalidated = true;
+      inFlight.delete(key);
+    }
+  }
+
   const keysToDelete = new Set<string>();
   for (const [tag, keys] of l1TagKeys) {
     if (tag.startsWith(prefix)) {
@@ -214,7 +273,7 @@ const subscribeToInvalidations = () => {
       try {
         const message = JSON.parse(rawMessage) as L1InvalidationMessage;
         if (message.source === INSTANCE_ID) return;
-        if (message.type === "key") removeL1Key(message.value);
+        if (message.type === "key") invalidateL1Key(message.value);
         if (message.type === "tag-prefix") {
           removeL1ByTagPrefix(message.value);
         }
@@ -257,21 +316,19 @@ const waitForL2Value = async (key: string, lockKey: string) => {
   return null;
 };
 
-const loadCachedValue = async <T>(
-  options: CacheLoadOptions<T>,
-  signal?: AbortSignal,
-): Promise<T> => {
-  signal?.throwIfAborted();
+const startCacheLoad = <T>(options: CacheLoadOptions<T>): Promise<T> => {
   const { key, fetchFn, ttl, tags = [], encode, decode } = options;
+  const staleWhileRevalidateMs = options.staleWhileRevalidateMs ?? 0;
   const shouldCache = options.shouldCache ?? (() => true);
 
-  const local = readL1<T>(key);
-  if (local.hit) return local.value;
-
   const existingFlight = inFlight.get(key);
-  if (existingFlight) {
-    return waitForPromise(existingFlight as Promise<T>, signal);
-  }
+  if (existingFlight) return existingFlight.promise as Promise<T>;
+
+  const flight: InFlightLoad = {
+    promise: Promise.resolve(),
+    tags: tags.map(tagName),
+    invalidated: false,
+  };
 
   const request = (async () => {
     // The Redis lookup itself is inside single-flight. When L1 expires under
@@ -279,7 +336,16 @@ const loadCachedValue = async <T>(
     const cached = await redis.get(key);
     if (cached !== null) {
       const decoded = decode(cached);
-      writeL1(key, decoded, Buffer.byteLength(cached), ttl, tags);
+      if (!flight.invalidated) {
+        writeL1(
+          key,
+          decoded,
+          Buffer.byteLength(cached),
+          ttl,
+          tags,
+          staleWhileRevalidateMs,
+        );
+      }
       return decoded;
     }
 
@@ -293,7 +359,16 @@ const loadCachedValue = async <T>(
       const remoteValue = await waitForL2Value(key, lockKey);
       if (remoteValue !== null) {
         const decoded = decode(remoteValue);
-        writeL1(key, decoded, Buffer.byteLength(remoteValue), ttl, tags);
+        if (!flight.invalidated) {
+          writeL1(
+            key,
+            decoded,
+            Buffer.byteLength(remoteValue),
+            ttl,
+            tags,
+            staleWhileRevalidateMs,
+          );
+        }
         return decoded;
       }
 
@@ -309,6 +384,10 @@ const loadCachedValue = async <T>(
       if (!shouldCache(freshData)) return freshData;
 
       const raw = encode(freshData);
+      // An explicit invalidation may arrive while this fill is waiting on
+      // Redis or the database. Do not let that older fill repopulate L2/L1.
+      if (flight.invalidated) return freshData;
+
       if (tags.length > 0) {
         const multi = redis.multi();
         multi.set(key, raw, { EX: ttl });
@@ -320,7 +399,16 @@ const loadCachedValue = async <T>(
       } else {
         await redis.set(key, raw, { EX: ttl });
       }
-      writeL1(key, freshData, Buffer.byteLength(raw), ttl, tags);
+      if (!flight.invalidated) {
+        writeL1(
+          key,
+          freshData,
+          Buffer.byteLength(raw),
+          ttl,
+          tags,
+          staleWhileRevalidateMs,
+        );
+      }
       return freshData;
     } finally {
       if (ownsLock) {
@@ -328,11 +416,33 @@ const loadCachedValue = async <T>(
       }
     }
   })().finally(() => {
-    inFlight.delete(key);
+    if (inFlight.get(key) === flight) inFlight.delete(key);
   });
 
-  inFlight.set(key, request);
-  return waitForPromise(request, signal);
+  flight.promise = request;
+  inFlight.set(key, flight);
+  return request;
+};
+
+const loadCachedValue = async <T>(
+  options: CacheLoadOptions<T>,
+  signal?: AbortSignal,
+): Promise<T> => {
+  signal?.throwIfAborted();
+
+  const local = readL1<T>(options.key);
+  if (local.hit) {
+    if (local.isStale && local.shouldRefresh) {
+      // SWR is opt-in at the call site. Keep serving the bounded stale value
+      // while one shared refresh checks Redis and, on an L2 miss, MongoDB.
+      void startCacheLoad(options).catch((error: unknown) => {
+        console.warn("Background L1 cache refresh failed", error);
+      });
+    }
+    return local.value;
+  }
+
+  return waitForPromise(startCacheLoad(options), signal);
 };
 
 export const cacheService = {
@@ -341,12 +451,14 @@ export const cacheService = {
     fetchFn: () => Promise<T>,
     ttl: number = 3600,
     signal?: AbortSignal,
+    staleWhileRevalidateMs = 0,
   ): Promise<T> {
     return loadCachedValue(
       {
         key,
         fetchFn,
         ttl,
+        staleWhileRevalidateMs,
         encode: JSON.stringify,
         decode: JSON.parse,
         shouldCache: (value) => value !== null && value !== undefined,
@@ -356,7 +468,7 @@ export const cacheService = {
   },
 
   async delete(key: string) {
-    removeL1Key(key);
+    invalidateL1Key(key);
     const result = await redis.unlink(key);
     await publishInvalidation({ type: "key", value: key });
     return result;
@@ -369,7 +481,7 @@ export const cacheService = {
       MATCH: pattern,
     })) {
       const normalizedKey = key as unknown as string;
-      removeL1Key(normalizedKey);
+      invalidateL1Key(normalizedKey);
       batch.push(normalizedKey);
       if (batch.length >= 500) {
         await redis.unlink(batch);
@@ -393,28 +505,38 @@ export const cacheService = {
 
     const flightKey = `tracker:${key}`;
     const existingFlight = inFlight.get(flightKey);
-    if (existingFlight) return existingFlight as Promise<string>;
+    if (existingFlight) return existingFlight.promise as Promise<string>;
+
+    const flight: InFlightLoad = {
+      promise: Promise.resolve(""),
+      tags: [],
+      invalidated: false,
+    };
 
     const request = (async () => {
       await redis.set(key, "1", { NX: true });
       const version = await redis.get(key);
       const normalizedVersion = version ?? "1";
-      writeL1(
-        key,
-        normalizedVersion,
-        Buffer.byteLength(normalizedVersion),
-        Math.ceil(L1_TTL_MS / 1_000),
-      );
+      if (!flight.invalidated) {
+        writeL1(
+          key,
+          normalizedVersion,
+          Buffer.byteLength(normalizedVersion),
+          Math.ceil(L1_TTL_MS / 1_000),
+        );
+      }
       return normalizedVersion;
     })().finally(() => {
-      inFlight.delete(flightKey);
+      if (inFlight.get(flightKey) === flight) inFlight.delete(flightKey);
     });
-    inFlight.set(flightKey, request);
+    flight.promise = request;
+    inFlight.set(flightKey, flight);
     return request;
   },
 
   async invalidateGetTracker(key: string) {
     const newVersion = await redis.incr(key);
+    invalidateL1Key(key);
     const normalizedVersion = String(newVersion);
     writeL1(
       key,
@@ -432,6 +554,7 @@ export const cacheService = {
     tags: string[],
     ttl: number = 3600,
     signal?: AbortSignal,
+    staleWhileRevalidateMs = 0,
   ): Promise<T> {
     return loadCachedValue(
       {
@@ -439,6 +562,7 @@ export const cacheService = {
         fetchFn,
         tags,
         ttl,
+        staleWhileRevalidateMs,
         encode: JSON.stringify,
         decode: JSON.parse,
         shouldCache: (value) => value !== null && value !== undefined,
@@ -454,12 +578,14 @@ export const cacheService = {
     ttl: number = 3600,
     formatWrapper?: (data: T) => unknown,
     signal?: AbortSignal,
+    staleWhileRevalidateMs = 0,
   ): Promise<string> {
     return loadCachedValue(
       {
         key,
         ttl,
         tags,
+        staleWhileRevalidateMs,
         fetchFn: async () => {
           const freshData = await fetchFn();
           if (freshData === null || freshData === undefined) return "";

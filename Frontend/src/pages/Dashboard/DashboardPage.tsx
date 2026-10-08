@@ -1,15 +1,30 @@
-import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import React, { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import {
-  BookOpen, PlusCircle, Layers, GraduationCap,
-  Globe, Lock, ChevronRight, Zap, Award, BarChart2
-} from 'lucide-react';
-import { apiClient } from '../../api/apiClient';
-import type { FlashcardSetSummary } from '../../types';
-import { useAuthStore } from '../../store/useAuthStore';
+  BookOpen,
+  PlusCircle,
+  Layers,
+  GraduationCap,
+  Globe,
+  Lock,
+  ChevronRight,
+  Zap,
+  Award,
+  BarChart2,
+} from "lucide-react";
+import { apiClient } from "../../api/apiClient";
+import type { FlashcardSetPage, FlashcardSetSummary } from "../../types";
+import { useAuthStore } from "../../store/useAuthStore";
 
-const StatCard: React.FC<{ icon: React.ReactNode; label: string; value: string; color: string }> = ({ icon, label, value, color }) => (
-  <div className={`glass-card rounded-2xl p-5 border border-slate-700/50 flex items-center gap-4`}>
+const StatCard: React.FC<{
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  color: string;
+}> = ({ icon, label, value, color }) => (
+  <div
+    className={`glass-card rounded-2xl p-5 border border-slate-700/50 flex items-center gap-4`}
+  >
     <div className={`p-3 rounded-xl ${color} text-white`}>{icon}</div>
     <div>
       <p className="text-2xl font-bold text-slate-100">{value}</p>
@@ -24,16 +39,31 @@ const SetCard: React.FC<{ set: FlashcardSetSummary }> = ({ set }) => (
     <div className="h-1.5 bg-gradient-to-r from-indigo-500 via-violet-500 to-purple-500" />
     <div className="p-5">
       <div className="flex items-start justify-between gap-2 mb-3">
-        <h3 className="font-bold text-slate-100 group-hover:text-indigo-300 transition-colors line-clamp-2 leading-tight">{set.title}</h3>
-        <span className="shrink-0 flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium"
-          style={{ background: set.isPublic ? 'rgba(99,102,241,0.15)' : 'rgba(100,116,139,0.15)', color: set.isPublic ? '#a5b4fc' : '#94a3b8' }}>
-          {set.isPublic ? <Globe className="w-3 h-3" /> : <Lock className="w-3 h-3" />}
-          {set.isPublic ? 'Công khai' : 'Riêng tư'}
+        <h3 className="font-bold text-slate-100 group-hover:text-indigo-300 transition-colors line-clamp-2 leading-tight">
+          {set.title}
+        </h3>
+        <span
+          className="shrink-0 flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium"
+          style={{
+            background: set.isPublic
+              ? "rgba(99,102,241,0.15)"
+              : "rgba(100,116,139,0.15)",
+            color: set.isPublic ? "#a5b4fc" : "#94a3b8",
+          }}
+        >
+          {set.isPublic ? (
+            <Globe className="w-3 h-3" />
+          ) : (
+            <Lock className="w-3 h-3" />
+          )}
+          {set.isPublic ? "Công khai" : "Riêng tư"}
         </span>
       </div>
 
       {set.description && (
-        <p className="text-xs text-slate-400 mb-4 line-clamp-2">{set.description}</p>
+        <p className="text-xs text-slate-400 mb-4 line-clamp-2">
+          {set.description}
+        </p>
       )}
 
       <div className="flex items-center gap-2 text-xs text-slate-500 mb-4">
@@ -74,6 +104,9 @@ export const DashboardPage: React.FC = () => {
   const { user } = useAuthStore();
   const [sets, setSets] = useState<FlashcardSetSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -81,7 +114,9 @@ export const DashboardPage: React.FC = () => {
       try {
         setIsLoading(true);
         const data = await loadSetsOnce();
-        setSets(data);
+        setSets(data.sets);
+        setNextCursor(data.pagination.nextCursor);
+        setHasMore(data.pagination.hasMore);
       } catch (err: any) {
         setError(err.message);
       } finally {
@@ -91,6 +126,27 @@ export const DashboardPage: React.FC = () => {
     fetchSets();
   }, []);
 
+  const loadMore = async () => {
+    if (!nextCursor || isLoadingMore) return;
+    try {
+      setIsLoadingMore(true);
+      const page = await loadSetsPage(nextCursor);
+      setSets((current) => {
+        const knownIds = new Set(current.map((set) => set.id));
+        return [
+          ...current,
+          ...page.sets.filter((set) => !knownIds.has(set.id)),
+        ];
+      });
+      setNextCursor(page.pagination.nextCursor);
+      setHasMore(page.pagination.hasMore);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
+
   const totalCards = sets.reduce((acc, set) => acc + set.cardCount, 0);
 
   return (
@@ -99,12 +155,14 @@ export const DashboardPage: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-3xl font-extrabold text-slate-100 tracking-tight">
-            Xin chào,{' '}
+            Xin chào,{" "}
             <span className="bg-gradient-to-r from-indigo-400 to-violet-400 bg-clip-text text-transparent">
-              {user?.name || user?.email || 'Học viên'} 👋
+              {user?.name || user?.email || "Học viên"} 👋
             </span>
           </h1>
-          <p className="text-slate-400 mt-1 text-sm">Tiếp tục hành trình chinh phục tiếng Anh của bạn</p>
+          <p className="text-slate-400 mt-1 text-sm">
+            Tiếp tục hành trình chinh phục tiếng Anh của bạn
+          </p>
         </div>
         <Link
           to="/set/create"
@@ -117,9 +175,24 @@ export const DashboardPage: React.FC = () => {
 
       {/* Stats Overview */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-        <StatCard icon={<Layers className="w-5 h-5" />} label="Bộ thẻ" value={String(sets.length)} color="bg-indigo-600" />
-        <StatCard icon={<BookOpen className="w-5 h-5" />} label="Tổng thẻ từ" value={String(totalCards)} color="bg-violet-600" />
-        <StatCard icon={<Award className="w-5 h-5" />} label="Phiên học" value="—" color="bg-purple-600" />
+        <StatCard
+          icon={<Layers className="w-5 h-5" />}
+          label="Bộ thẻ"
+          value={String(sets.length)}
+          color="bg-indigo-600"
+        />
+        <StatCard
+          icon={<BookOpen className="w-5 h-5" />}
+          label="Tổng thẻ từ"
+          value={String(totalCards)}
+          color="bg-violet-600"
+        />
+        <StatCard
+          icon={<Award className="w-5 h-5" />}
+          label="Phiên học"
+          value="—"
+          color="bg-purple-600"
+        />
       </div>
 
       {/* Sets Grid */}
@@ -134,7 +207,10 @@ export const DashboardPage: React.FC = () => {
         {isLoading ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
             {[...Array(6)].map((_, i) => (
-              <div key={i} className="h-56 rounded-2xl bg-slate-800/50 animate-pulse border border-slate-700/40" />
+              <div
+                key={i}
+                className="h-56 rounded-2xl bg-slate-800/50 animate-pulse border border-slate-700/40"
+              />
             ))}
           </div>
         ) : error ? (
@@ -145,7 +221,9 @@ export const DashboardPage: React.FC = () => {
           <div className="text-center py-20 glass-card rounded-2xl border border-dashed border-slate-700">
             <BookOpen className="w-14 h-14 text-slate-600 mx-auto mb-4" />
             <p className="text-slate-400 font-medium">Chưa có bộ thẻ nào</p>
-            <p className="text-slate-500 text-sm mt-1 mb-6">Hãy tạo bộ thẻ đầu tiên để bắt đầu học!</p>
+            <p className="text-slate-500 text-sm mt-1 mb-6">
+              Hãy tạo bộ thẻ đầu tiên để bắt đầu học!
+            </p>
             <Link
               to="/set/create"
               className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-all"
@@ -156,7 +234,21 @@ export const DashboardPage: React.FC = () => {
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-            {sets.map((set) => <SetCard key={set.id} set={set} />)}
+            {sets.map((set) => (
+              <SetCard key={set.id} set={set} />
+            ))}
+          </div>
+        )}
+        {!isLoading && !error && hasMore && (
+          <div className="mt-6 flex justify-center">
+            <button
+              type="button"
+              onClick={loadMore}
+              disabled={isLoadingMore}
+              className="rounded-xl border border-indigo-500/40 bg-indigo-600/15 px-5 py-2.5 text-sm font-semibold text-indigo-300 transition-colors hover:bg-indigo-600/30 disabled:cursor-wait disabled:opacity-60"
+            >
+              {isLoadingMore ? "Đang tải…" : "Tải thêm bộ thẻ"}
+            </button>
           </div>
         )}
       </div>
@@ -180,8 +272,12 @@ export const DashboardPage: React.FC = () => {
                     <BookOpen className="w-4 h-4" />
                   </div>
                   <div>
-                    <p className="text-sm font-semibold text-slate-200 group-hover:text-indigo-300">{set.title}</p>
-                    <p className="text-xs text-slate-500">{set.cardCount} thẻ</p>
+                    <p className="text-sm font-semibold text-slate-200 group-hover:text-indigo-300">
+                      {set.title}
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      {set.cardCount} thẻ
+                    </p>
                   </div>
                 </div>
                 <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-indigo-400 transition-colors" />
@@ -193,13 +289,18 @@ export const DashboardPage: React.FC = () => {
     </div>
   );
 };
-let activeSetsRequest: Promise<FlashcardSetSummary[]> | null = null;
+let activeSetsRequest: Promise<FlashcardSetPage> | null = null;
+
+const loadSetsPage = (cursor?: string) =>
+  apiClient.get("/sets", {
+    params: { limit: 20, ...(cursor ? { cursor } : {}) },
+  }) as unknown as Promise<FlashcardSetPage>;
 
 const loadSetsOnce = () => {
   if (!activeSetsRequest) {
-    activeSetsRequest = apiClient.get('/sets')
-      .then((data) => Array.isArray(data) ? data as FlashcardSetSummary[] : [])
-      .finally(() => { activeSetsRequest = null; });
+    activeSetsRequest = loadSetsPage().finally(() => {
+      activeSetsRequest = null;
+    });
   }
   return activeSetsRequest;
 };

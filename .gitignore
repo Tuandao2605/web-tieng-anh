@@ -32,3 +32,4 @@ dist-ssr
 *.sln
 *.sw?
 *.md
+!TAI_LIEU_TECH_LEAD_DU_AN.md

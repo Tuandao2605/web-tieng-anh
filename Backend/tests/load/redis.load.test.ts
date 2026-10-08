@@ -80,7 +80,7 @@ test("Redis load profile", async (suite) => {
   const { closeRedisConnections, redisClient } =
     await import("../../src/utils/redis");
   const { consumeRateLimitToken } =
-    await import("../../src/middlewares/rateLimit.middleware");
+    await import("../../src/services/rateLimit.service");
   const redis = redisClient.getInstance();
 
   try {

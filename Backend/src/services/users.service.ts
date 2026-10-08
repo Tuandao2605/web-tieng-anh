@@ -1,4 +1,3 @@
-import { Request } from "express";
 import { prisma } from "../libs/prisma";
 import { hashPassword } from "../utils/hash";
 import { cacheService } from "./cache.service";
@@ -17,15 +16,19 @@ interface SearchQuery {
   include?: string;
 }
 
+type UserDetailQuery = {
+  include?: string | undefined;
+};
+
 export const usersService = {
-  async getUsers(req: Request) {
+  async getUsers(query: SearchQuery) {
     const {
       page = 1,
       limit = 20,
       status,
       include,
       ...filter
-    } = req.query as SearchQuery;
+    } = query;
     let hashFilters = "";
 
     const pageNum = Math.max(1, Number(page) || 1);
@@ -101,8 +104,8 @@ export const usersService = {
       CACHE.USER.TAGS.LIST(),
     );
   },
-  async getUser(id: string, req: Request) {
-    const { include = "" } = req.query as { include: string };
+  async getUser(id: string, query: UserDetailQuery) {
+    const { include = "" } = query;
     const allowedRelations: (keyof IncludeRelations)[] = [
       "phone",
       "orders",

@@ -1,11 +1,13 @@
 import { emailQueue } from "../queues";
 import { JOB_NAME } from "../constants/queue.constants";
+import { assertBackgroundWorkerRole } from "../utils/backgroundRuntime";
 
 const EMAIL_SCHEDULER_ID = "send-email-welcome";
 const LEGACY_EMAIL_SCHEDULER_ID = "send-email-welcome-daily";
 let started = false;
 
 export const startSchedulers = async () => {
+  assertBackgroundWorkerRole();
   if (started) return;
 
   // Clean up the old development scheduler that ran every five seconds. Also

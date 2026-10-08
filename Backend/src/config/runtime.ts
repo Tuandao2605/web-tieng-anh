@@ -33,7 +33,7 @@ if (
 const developmentOrigins = [
   "http://localhost:5500",
   "http://127.0.0.1:5500",
-  "http://localhost:3000",
+  "http://localhost:3001",
 ];
 const configuredOrigins = (process.env.CORS_ALLOWED_ORIGINS ?? "")
   .split(",")
@@ -46,7 +46,6 @@ if (isProduction && configuredOrigins.length === 0) {
 
 export const runtimeConfig = {
   isProduction,
-  port: Number(process.env.PORT) || 3000,
   sessionSecret: configuredSessionSecret || developmentSessionSecret,
   sessionCookieName: process.env.SESSION_COOKIE_NAME?.trim() || "web.sid",
   sessionTtlMs:

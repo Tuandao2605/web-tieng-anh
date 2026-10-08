@@ -42,6 +42,15 @@ export interface FlashcardSetSummary {
   cardCount: number;
 }
 
+export interface FlashcardSetPage {
+  sets: FlashcardSetSummary[];
+  pagination: {
+    limit: number;
+    hasMore: boolean;
+    nextCursor: string | null;
+  };
+}
+
 export interface PublicDeckSearchItem {
   id: string;
   title: string;

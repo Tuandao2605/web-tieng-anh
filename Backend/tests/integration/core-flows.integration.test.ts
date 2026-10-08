@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { Request } from "express";
 
 type SetOptions = {
   NX?: boolean;
@@ -238,11 +237,9 @@ test("auth, cache, and study-session integration", async (suite) => {
         },
       );
 
-      const requestFor = (userId: string) =>
-        ({ user: { id: userId } }) as unknown as Request;
-      const postsA = await postsService.getPost(requestFor("user-a"));
-      const postsB = await postsService.getPost(requestFor("user-b"));
-      const postsAFromCache = await postsService.getPost(requestFor("user-a"));
+      const postsA = await postsService.getPost("user-a");
+      const postsB = await postsService.getPost("user-b");
+      const postsAFromCache = await postsService.getPost("user-a");
 
       assert.equal(postsA[0]?.userId, "user-a");
       assert.equal(postsB[0]?.userId, "user-b");

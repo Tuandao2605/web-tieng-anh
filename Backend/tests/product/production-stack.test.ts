@@ -22,8 +22,8 @@ const MONGO_URL =
   "mongodb://root:product-test-password@127.0.0.1:37017/english_learning_product_test?authSource=admin&replicaSet=rs0&directConnection=true";
 const REDIS_URL = "redis://127.0.0.1:36379";
 const ELASTICSEARCH_URL = "http://127.0.0.1:39200";
-const NODE_1_URL = "http://127.0.0.1:3301";
-const NODE_2_URL = "http://127.0.0.1:3302";
+const NEST_NODE_1_URL = "http://127.0.0.1:3401";
+const NEST_NODE_2_URL = "http://127.0.0.1:3402";
 const NGINX_URL = "http://127.0.0.1:38080";
 const LATENCY_PROXY_URL = "http://127.0.0.1:38081";
 const FRONTEND_URL = "http://127.0.0.1:34173";
@@ -346,7 +346,8 @@ const runHttpLoad = async (
 };
 
 class ProductStack {
-  readonly backends: ManagedProcess[] = [];
+  readonly nestBackends: ManagedProcess[] = [];
+  private worker: ManagedProcess | null = null;
   private frontend: ManagedProcess | null = null;
   private latencyProxy: TcpLatencyProxy | null = null;
   redis: RedisClientType | null = null;
@@ -358,7 +359,7 @@ class ProductStack {
 
   async start() {
     assert.ok(
-      existsSync(join(BACKEND_DIRECTORY, "dist/src/app.js")),
+      existsSync(join(BACKEND_DIRECTORY, "dist/src/main.js")),
       "Run npm run build before the product test",
     );
 
@@ -440,27 +441,91 @@ class ProductStack {
       HEAVY_RATE_LIMIT_WINDOW_MS: "60000",
     };
 
-    for (const [index, port] of [3301, 3302].entries()) {
+    for (const [index, port] of [3401, 3402].entries()) {
       const backend = new ManagedProcess(
         `backend-${index + 1}`,
         process.execPath,
-        ["dist/src/app.js"],
+        ["dist/src/main.js"],
         {
           cwd: BACKEND_DIRECTORY,
           env: {
             ...sharedEnvironment,
-            PORT: String(port),
+            NEST_PORT: String(port),
             WEBSOCKET_PORT: String(38301 + index),
           },
         },
       );
-      this.backends.push(backend);
+      this.nestBackends.push(backend);
     }
 
     await Promise.all([
-      waitForHttp(`${NODE_1_URL}/api/v1/sets`, 90_000, this.backends[0]),
-      waitForHttp(`${NODE_2_URL}/api/v1/sets`, 90_000, this.backends[1]),
+      waitForHttp(
+        `${NEST_NODE_1_URL}/api/v1/health`,
+        90_000,
+        this.nestBackends[0],
+      ),
+      waitForHttp(
+        `${NEST_NODE_2_URL}/api/v1/health`,
+        90_000,
+        this.nestBackends[1],
+      ),
     ]);
+
+    await Promise.all([
+      waitForHttp(
+        `${NEST_NODE_1_URL}/api/v1/posts`,
+        90_000,
+        this.nestBackends[0],
+      ),
+      waitForHttp(
+        `${NEST_NODE_2_URL}/api/v1/posts`,
+        90_000,
+        this.nestBackends[1],
+      ),
+    ]);
+    for (const baseUrl of [NEST_NODE_1_URL, NEST_NODE_2_URL]) {
+      const [getPosts, createPost, updatePost] = await Promise.all([
+        fetch(`${baseUrl}/api/v1/posts`),
+        fetch(`${baseUrl}/api/v1/posts`, { method: "POST" }),
+        fetch(`${baseUrl}/api/v1/posts`, { method: "PUT" }),
+      ]);
+      if (getPosts.status !== 401 || createPost.status !== 401) {
+        throw new Error(
+          `Nest posts GET/POST auth contract mismatch: ${getPosts.status}/${createPost.status}`,
+        );
+      }
+      if (updatePost.status !== 200 || (await updatePost.text()) !== "{}") {
+        throw new Error(
+          `Nest posts PUT placeholder contract mismatch: ${updatePost.status}`,
+        );
+      }
+    }
+
+    this.worker = new ManagedProcess(
+      "background-worker",
+      process.execPath,
+      ["dist/src/worker.js"],
+      {
+        cwd: BACKEND_DIRECTORY,
+        env: {
+          ...sharedEnvironment,
+          BACKGROUND_RUNTIME_ROLE: "worker",
+          ENABLE_EMAIL_WORKER: "true",
+        },
+      },
+    );
+    await retry(
+      async () => {
+        if (!this.worker?.running) {
+          throw new Error(this.worker?.logs || "Background worker exited");
+        }
+        if (!this.worker.logs.includes("Background runtime started")) {
+          throw new Error("Background worker has not finished starting");
+        }
+      },
+      30_000,
+      "dedicated background worker startup",
+    );
 
     this.frontend = new ManagedProcess(
       "frontend-preview",
@@ -484,6 +549,12 @@ class ProductStack {
       { cwd: BACKEND_DIRECTORY, timeoutMs: 120_000 },
     );
     await waitForHttp(`${NGINX_URL}/api/v1/sets`, 60_000);
+    const proxiedPosts = await fetch(`${NGINX_URL}/api/v1/posts`);
+    if (proxiedPosts.status !== 401) {
+      throw new Error(
+        `Nginx did not route /api/v1/posts to Nest: ${proxiedPosts.status}`,
+      );
+    }
 
     this.latencyProxy = new TcpLatencyProxy(38081, 38080, 60);
     await this.latencyProxy.start();
@@ -509,8 +580,9 @@ class ProductStack {
     if (this.redis?.isOpen) await safely(() => this.redis!.close());
     if (this.prisma) await safely(() => this.prisma!.$disconnect());
     await Promise.all(
-      this.backends.map((backend) => safely(() => backend.stop())),
+      this.nestBackends.map((backend) => safely(() => backend.stop())),
     );
+    if (this.worker) await safely(() => this.worker!.stop());
     if (this.frontend) await safely(() => this.frontend!.stop());
     await safely(() =>
       runCommand(
@@ -578,6 +650,51 @@ test(
     try {
       await stack.start();
 
+      await suite.test(
+        "serves the migrated static page and EJS auth flow with Redis session and CSRF",
+        async () => {
+          const root = await fetch(NGINX_URL);
+          assert.equal(root.status, 200);
+          assert.match(await root.text(), /Disconnect/);
+
+          const loginPage = await fetch(`${NGINX_URL}/auth/login`);
+          assert.equal(loginPage.status, 200);
+          const loginHtml = await loginPage.text();
+          const csrfToken = loginHtml.match(
+            /name="_csrf" value="([^"]+)"/,
+          )?.[1];
+          const sessionCookie = loginPage.headers
+            .get("set-cookie")
+            ?.split(";", 1)[0];
+          assert.ok(csrfToken, "login form must include a CSRF token");
+          assert.ok(sessionCookie, "login form must issue a session cookie");
+
+          const rejectedLogin = await fetch(`${NGINX_URL}/auth/login`, {
+            method: "POST",
+            redirect: "manual",
+            headers: {
+              Cookie: sessionCookie,
+              "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body: new URLSearchParams({
+              _csrf: csrfToken,
+              email: `missing-${suffix}@example.com`,
+              password: "wrong-password",
+            }),
+          });
+          assert.equal(rejectedLogin.status, 302);
+          assert.equal(rejectedLogin.headers.get("location"), "/auth/login");
+
+          const loginAfterFailure = await fetch(`${NGINX_URL}/auth/login`, {
+            headers: { Cookie: sessionCookie },
+          });
+          assert.match(
+            await loginAfterFailure.text(),
+            /Email hoac mat khau khong chinh xac/,
+          );
+        },
+      );
+
       await suite.test("serves the production frontend build", async () => {
         const root = await fetch(FRONTEND_URL);
         assert.equal(root.status, 200);
@@ -602,7 +719,7 @@ test(
         async () => {
           const password = "product-test-password";
           const registerA = await jsonRequest(
-            NODE_1_URL,
+            NEST_NODE_1_URL,
             "/api/v1/auth/register",
             {
               body: {
@@ -613,7 +730,7 @@ test(
             },
           );
           const registerB = await jsonRequest(
-            NODE_2_URL,
+            NEST_NODE_2_URL,
             "/api/v1/auth/register",
             {
               body: {
@@ -636,12 +753,16 @@ test(
           userA = apiData<User>(registerA);
           userB = apiData<User>(registerB);
 
-          const loginA = await jsonRequest(NODE_1_URL, "/api/v1/auth/login", {
-            body: { email: userA.email, password },
-          });
-          const loginB = await jsonRequest(NODE_2_URL, "/api/v1/auth/login", {
-            body: { email: userB.email, password },
-          });
+          const loginA = await jsonRequest(
+            NEST_NODE_1_URL,
+            "/api/v1/auth/login",
+            { body: { email: userA.email, password } },
+          );
+          const loginB = await jsonRequest(
+            NEST_NODE_2_URL,
+            "/api/v1/auth/login",
+            { body: { email: userB.email, password } },
+          );
           assert.equal(
             loginA.response.status,
             200,
@@ -656,7 +777,7 @@ test(
           tokensB = apiData<Tokens>(loginB);
 
           const profileAcrossInstances = await jsonRequest(
-            NODE_2_URL,
+            NEST_NODE_2_URL,
             "/api/v1/auth/me",
             { token: tokensA.accessToken },
           );
@@ -693,17 +814,21 @@ test(
       await suite.test(
         "rejects a revoked token across both warm Node L1 caches",
         async () => {
-          const login = await jsonRequest(NODE_1_URL, "/api/v1/auth/login", {
-            body: {
-              email: userA.email,
-              password: "product-test-password",
+          const login = await jsonRequest(
+            NEST_NODE_1_URL,
+            "/api/v1/auth/login",
+            {
+              body: {
+                email: userA.email,
+                password: "product-test-password",
+              },
             },
-          });
+          );
           assert.equal(login.response.status, 200, JSON.stringify(login.body));
           const disposableTokens = apiData<Tokens>(login);
 
           const primedProfiles = await Promise.all(
-            [NODE_1_URL, NODE_2_URL].map((baseUrl) =>
+            [NEST_NODE_1_URL, NEST_NODE_2_URL].map((baseUrl) =>
               jsonRequest(baseUrl, "/api/v1/auth/me", {
                 token: disposableTokens.accessToken,
               }),
@@ -724,7 +849,7 @@ test(
           );
 
           const rejectedProfiles = await Promise.all(
-            [NODE_1_URL, NODE_2_URL].map((baseUrl) =>
+            [NEST_NODE_1_URL, NEST_NODE_2_URL].map((baseUrl) =>
               jsonRequest(baseUrl, "/api/v1/auth/me", {
                 token: disposableTokens.accessToken,
               }),
@@ -756,7 +881,7 @@ test(
           });
           assert.equal(rejectedOrigin.response.status, 403);
 
-          const created = await jsonRequest(NODE_1_URL, "/api/v1/sets", {
+          const created = await jsonRequest(NEST_NODE_1_URL, "/api/v1/sets", {
             token: tokensA.accessToken,
             body: {
               title: `Private product deck ${suffix}`,
@@ -778,7 +903,7 @@ test(
           privateDeck = apiData<Deck>(created);
 
           const ownerPrimeOnNode2 = await jsonRequest(
-            NODE_2_URL,
+            NEST_NODE_2_URL,
             `/api/v1/sets/${privateDeck.id}`,
             { token: tokensA.accessToken },
           );
@@ -811,7 +936,7 @@ test(
 
           const updatedTitle = `Private deck updated ${suffix}`;
           const updated = await jsonRequest(
-            NODE_1_URL,
+            NEST_NODE_1_URL,
             `/api/v1/sets/${privateDeck.id}`,
             {
               method: "PUT",
@@ -841,7 +966,7 @@ test(
           await retry(
             async () => {
               const fromOtherNode = await jsonRequest(
-                NODE_2_URL,
+                NEST_NODE_2_URL,
                 `/api/v1/sets/${privateDeck.id}`,
                 { token: tokensA.accessToken },
               );
@@ -858,7 +983,7 @@ test(
         "paginates set summaries with a stable cursor and versioned pages",
         async () => {
           const warmedPage = await jsonRequest(
-            NODE_2_URL,
+            NEST_NODE_2_URL,
             "/api/v1/sets?limit=10",
             { token: tokensA.accessToken },
           );
@@ -866,7 +991,7 @@ test(
 
           const createdPages = await Promise.all(
             Array.from({ length: 21 }, (_, index) =>
-              jsonRequest(NODE_1_URL, "/api/v1/sets", {
+              jsonRequest(NEST_NODE_1_URL, "/api/v1/sets", {
                 token: tokensA.accessToken,
                 body: {
                   title: `Paginated deck ${suffix}-${index}`,
@@ -889,7 +1014,7 @@ test(
           );
 
           const firstPageResponse = await jsonRequest(
-            NODE_2_URL,
+            NEST_NODE_2_URL,
             "/api/v1/sets?limit=10",
             { token: tokensA.accessToken },
           );
@@ -904,7 +1029,7 @@ test(
           assert.ok(firstPage.sets.every(({ id }) => createdIds.has(id)));
 
           const secondPageResponse = await jsonRequest(
-            NODE_1_URL,
+            NEST_NODE_1_URL,
             `/api/v1/sets?limit=10&cursor=${firstPage.pagination.nextCursor}`,
             { token: tokensA.accessToken },
           );
@@ -926,7 +1051,7 @@ test(
         "indexes and searches public decks through Elasticsearch jobs",
         async () => {
           const searchTerm = `searchable-${suffix}`;
-          const created = await jsonRequest(NODE_2_URL, "/api/v1/sets", {
+          const created = await jsonRequest(NEST_NODE_2_URL, "/api/v1/sets", {
             token: tokensB.accessToken,
             body: {
               title: `${searchTerm} vocabulary`,
@@ -977,7 +1102,7 @@ test(
           const submissions = await Promise.all(
             privateDeck.cards.map((card, index) =>
               jsonRequest(
-                index % 2 === 0 ? NODE_1_URL : NODE_2_URL,
+                index % 2 === 0 ? NEST_NODE_1_URL : NEST_NODE_2_URL,
                 "/api/v1/study/submit-answer",
                 {
                   token: tokensA.accessToken,
@@ -1015,7 +1140,7 @@ test(
           assert.equal(Object.keys(sessionState.cardProgressMap).length, 4);
 
           const syncResults = await Promise.all(
-            [NODE_1_URL, NODE_2_URL, NGINX_URL].map((baseUrl) =>
+            [NEST_NODE_1_URL, NEST_NODE_2_URL, NGINX_URL].map((baseUrl) =>
               jsonRequest(baseUrl, "/api/v1/study/sync-progress", {
                 token: tokensA.accessToken,
                 body: { sessionId },
@@ -1039,7 +1164,7 @@ test(
           assert.ok(persistedSessionId);
 
           const retrySync = await jsonRequest(
-            NODE_2_URL,
+            NEST_NODE_2_URL,
             "/api/v1/study/sync-progress",
             { token: tokensA.accessToken, body: { sessionId } },
           );
@@ -1126,8 +1251,8 @@ test(
           const upstreams = responses.map(
             ({ response }) => response.headers.get("x-test-upstream") ?? "",
           );
-          assert.ok(upstreams.some((value) => value.includes(":3301")));
-          assert.ok(upstreams.some((value) => value.includes(":3302")));
+          assert.ok(upstreams.some((value) => value.includes(":3401")));
+          assert.ok(upstreams.some((value) => value.includes(":3402")));
         },
       );
 
@@ -1177,17 +1302,17 @@ test(
           );
 
           // Warm up cache for both authenticated and anonymous endpoints
-          await jsonRequest(NODE_1_URL, "/api/v1/sets", {
+          await jsonRequest(NEST_NODE_1_URL, "/api/v1/sets", {
             token: tokensA.accessToken,
           });
-          await jsonRequest(NODE_1_URL, "/api/v1/sets");
+          await jsonRequest(NEST_NODE_1_URL, "/api/v1/sets");
 
           // 1. Direct Node.js vs Nginx (Authenticated, Warm Cache)
           const directNodeWarmAuth = await runHttpLoad(
             benchmarkRequests,
             benchmarkConcurrency,
             async () => {
-              const res = await jsonRequest(NODE_1_URL, "/api/v1/sets", {
+              const res = await jsonRequest(NEST_NODE_1_URL, "/api/v1/sets", {
                 token: tokensA.accessToken,
               });
               assert.equal(res.response.status, 200);
@@ -1249,7 +1374,7 @@ test(
               }),
             );
             const start = performance.now();
-            const res = await jsonRequest(NODE_1_URL, "/api/v1/sets", {
+            const res = await jsonRequest(NEST_NODE_1_URL, "/api/v1/sets", {
               token: tokensA.accessToken,
             });
             coldLatencies.push(performance.now() - start);
@@ -1369,8 +1494,8 @@ test(
         },
       );
 
-      await suite.test("fails over when one Node instance stops", async (t) => {
-        await stack.backends[0]?.stop();
+      await suite.test("fails over when one Nest instance stops", async (t) => {
+        await stack.nestBackends[0]?.stop();
         // Nginx Open Source uses passive health checks. Exercise its workers so
         // the dead peer is marked unavailable, and report the convergence
         // errors separately from the steady-state availability assertion.
@@ -1407,7 +1532,7 @@ test(
         );
         assert.ok(
           responses.every(({ response }) =>
-            (response.headers.get("x-test-upstream") ?? "").includes(":3302"),
+            (response.headers.get("x-test-upstream") ?? "").includes(":3402"),
           ),
         );
       });

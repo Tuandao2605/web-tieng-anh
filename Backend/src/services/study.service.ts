@@ -31,6 +31,10 @@ const SESSION_LOCK_WAIT_MS = positiveNumberFromEnv(
   process.env.STUDY_SESSION_LOCK_WAIT_MS,
   SESSION_LOCK_TTL_MS + 1_000,
 );
+const configuredSetListSWRMs = Number(process.env.SET_LIST_CACHE_SWR_MS);
+const SET_LIST_SWR_MS = Number.isFinite(configuredSetListSWRMs)
+  ? Math.min(60_000, Math.max(0, configuredSetListSWRMs))
+  : 5_000;
 const sleep = (milliseconds: number) =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -256,6 +260,7 @@ export class StudyService {
         },
       }),
       signal,
+      SET_LIST_SWR_MS,
     );
   }
 

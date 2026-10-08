@@ -3,7 +3,7 @@
 Ứng dụng học tiếng Anh/flashcard gồm:
 
 - `Frontend`: React + Vite + Zustand + TanStack Query
-- `Backend`: Express + TypeScript + Prisma + MongoDB + Redis
+- `Backend`: NestJS + Fastify + TypeScript + Prisma + MongoDB + Redis
 - `docker-compose.yml`: MongoDB replica set, Mongo Express và Redis
 
 ## Chạy local
@@ -26,7 +26,19 @@ npm ci
 npm run dev
 ```
 
-Backend chạy tại `http://localhost:3000`.
+Backend chạy tại `http://localhost:3001`.
+
+NestJS/Fastify là HTTP bootstrap duy nhất và chạy tại `http://localhost:3001`. API, các trang EJS, session/flash/CSRF và static files được phục vụ từ Nest; Socket.IO được khởi chạy cùng Nest trên `WEBSOCKET_PORT` (mặc định `8000`). URL và response contract hiện có được giữ nguyên. PM2 production chạy Nest API và background worker riêng.
+
+Scheduler và BullMQ workers chạy trong process riêng, không khởi chạy từ Nest API. Khi phát triển local, chạy thêm terminal thứ hai:
+
+```bash
+npm run dev:workers
+```
+
+PM2 production cũng chạy đúng một instance `web-hoctienganh-workers`. `npm run start:workers` là entrypoint production tương ứng.
+
+`InfrastructureModule` đăng ký Prisma, Redis và `cacheService` làm global providers, dùng lại đúng các singleton hiện có. Khi Nest shutdown, Socket.IO, queue, Prisma, Redis và cache Pub/Sub được đóng theo lifecycle.
 
 ### 3. Chạy Frontend
 

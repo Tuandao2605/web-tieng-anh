@@ -1,17 +1,20 @@
-import { Request } from "express";
 import { CACHE } from "../constants/cache.constants";
 import { hasErrorCode, UpdatedError } from "../errors/app.error";
 import { Prisma, User } from "../generated/prisma";
 import { prisma } from "../libs/prisma";
 import { cacheService } from "./cache.service";
 
+const configuredSWRMs = Number(process.env.POST_LIST_CACHE_SWR_MS);
+const POST_LIST_SWR_MS = Number.isFinite(configuredSWRMs)
+  ? Math.min(60_000, Math.max(0, configuredSWRMs))
+  : 5_000;
+
 export const postsService = {
-  async getPost(req: Request) {
+  async getPost(userId: string | undefined) {
     const listVersion = await cacheService.getTracker(
       CACHE.POST.TRACKERS.LIST_VERSION,
     );
 
-    const userId = req.user?.id;
     if (!userId) {
       throw new UpdatedError("Unauthorized", 401);
     }
@@ -28,12 +31,15 @@ export const postsService = {
         });
       },
       CACHE.POST.TAGS.LIST(),
+      3600,
+      undefined,
+      POST_LIST_SWR_MS,
     );
   },
   async createPost({
     user,
     ...postData
-  }: { user: User } & Prisma.PostCreateInput) {
+  }: { user: Pick<User, "id"> } & Omit<Prisma.PostCreateInput, "user">) {
     try {
       const post = await prisma.post.create({
         data: {

@@ -1,7 +1,14 @@
-import { Request } from "express";
 import { prisma } from "../libs/prisma";
 import { LoginData, RegisterData } from "../types/auth";
 import { hashPassword, verifyPassword } from "../utils/hash";
+
+type SessionRequest = {
+  session: {
+    regenerate(callback: (error: unknown) => void): unknown;
+    save(callback: (error: unknown) => void): unknown;
+    user?: { id: string; name: string | null; email: string };
+  };
+};
 
 export const authService = {
   register: async (data: RegisterData, signal?: AbortSignal) => {
@@ -28,7 +35,7 @@ export const authService = {
       },
     });
   },
-  login: async ({ email, password }: LoginData, req: Request) => {
+  login: async ({ email, password }: LoginData, req: SessionRequest) => {
     const user = await prisma.user.findUnique({
       where: {
         email,

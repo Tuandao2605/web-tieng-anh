@@ -1,3 +1,1 @@
-import dotenv from "dotenv";
-dotenv.config();
-import "./email.worker";
+export { closeEmailWorker, startEmailWorker } from "./email.worker";
