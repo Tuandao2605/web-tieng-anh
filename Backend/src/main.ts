@@ -1,5 +1,4 @@
 import "reflect-metadata";
-import querystring from "node:querystring";
 import { NestFactory } from "@nestjs/core";
 import {
   FastifyAdapter,
@@ -21,7 +20,7 @@ const nestPort =
     ? configuredNestPort
     : Number(process.env.PORT) > 0
       ? Number(process.env.PORT)
-      : 3001;
+      : 3000;
 const trustProxySetting = process.env.TRUST_PROXY?.trim();
 if (trustProxySetting === "true") {
   throw new Error(
@@ -52,13 +51,6 @@ const bootstrap = async () => {
   );
 
   try {
-    const fastify = app.getHttpAdapter().getInstance();
-    fastify.addContentTypeParser(
-      "application/x-www-form-urlencoded",
-      { parseAs: "string" },
-      (_request, body, done) => done(null, querystring.parse(body.toString())),
-    );
-
     await app.register(fastifyCookie, { secret: runtimeConfig.sessionSecret });
     await app.register(fastifyCors, {
       origin: (origin, callback) => {

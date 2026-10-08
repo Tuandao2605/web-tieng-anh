@@ -7,7 +7,7 @@ module.exports = {
       exec_mode: "fork",
       env: {
         NODE_ENV: "production",
-        NEST_PORT: 3001,
+        NEST_PORT: 3000,
         BACKGROUND_RUNTIME_ROLE: "api"
       }
     },
