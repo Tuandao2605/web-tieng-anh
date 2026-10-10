@@ -1,12 +1,12 @@
 import "dotenv/config";
 import "reflect-metadata";
 import { NestFactory } from "@nestjs/core";
-import { InfrastructureModule } from "../infrastructure/infrastructure.module";
-import { ElasticsearchService } from "../services/elasticsearch.service";
+import { ElasticsearchModule } from "../modules/elasticsearch/elasticsearch.module";
+import { ElasticsearchService } from "../modules/elasticsearch/elasticsearch.service";
 
 async function main() {
   const applicationContext = await NestFactory.createApplicationContext(
-    InfrastructureModule,
+    ElasticsearchModule,
     { logger: false },
   );
   try {

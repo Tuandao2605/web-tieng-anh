@@ -2,10 +2,7 @@ import { Inject, Injectable } from "@nestjs/common";
 import { CACHE } from "../../constants/cache.constants";
 import { hasErrorCode, UpdatedError } from "../../errors/app.error";
 import { Prisma, User } from "../../generated/prisma";
-import {
-  CACHE_SERVICE,
-  CacheProvider,
-} from "../../infrastructure/infrastructure.tokens";
+import { CACHE_SERVICE, type CacheProvider } from "../cache/cache.tokens";
 import { POSTS_REPOSITORY } from "./posts.tokens";
 import { PostRepository } from "./posts.repository";
 

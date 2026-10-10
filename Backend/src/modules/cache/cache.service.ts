@@ -5,7 +5,7 @@ import {
   PubSubRedisProvider,
   REDIS_CLIENT,
   RedisProvider,
-} from "../infrastructure/infrastructure.tokens";
+} from "../../config/infrastructure.tokens";
 
 let redis: RedisProvider | undefined;
 let pubSub: PubSubRedisProvider | undefined;

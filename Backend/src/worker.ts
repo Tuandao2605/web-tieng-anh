@@ -61,18 +61,18 @@ const bootstrap = async () => {
     searchIndexWorker,
     emailWorker,
     { NestFactory },
-    { InfrastructureModule },
+    { ElasticsearchModule },
     { ElasticsearchService },
   ] = await Promise.all([
     import("./scheduler"),
     import("./workers/search-index.worker"),
     import("./workers/email.worker"),
     import("@nestjs/core"),
-    import("./infrastructure/infrastructure.module"),
-    import("./services/elasticsearch.service"),
+    import("./modules/elasticsearch/elasticsearch.module"),
+    import("./modules/elasticsearch/elasticsearch.service"),
   ]);
   const applicationContext = await NestFactory.createApplicationContext(
-    InfrastructureModule,
+    ElasticsearchModule,
     { logger: false },
   );
 

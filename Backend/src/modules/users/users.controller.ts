@@ -11,7 +11,7 @@ import {
   Query,
   UseGuards,
 } from "@nestjs/common";
-import { updateUserSchema } from "./users.validator";
+import { UpdateUserDto } from "./dto/update-user.dto";
 import { ApiMessage } from "../../common/decorators/api-message.decorator";
 import { apiHttpException } from "../../common/exceptions/api-http-exception";
 import { ApiRateLimitGuard, JwtAuthGuard } from "../../common/guards/api.guards";
@@ -46,24 +46,8 @@ export class UsersController {
   @Patch(":id")
   @HttpCode(HttpStatus.OK)
   @ApiMessage("Update User Success")
-  async update(@Param("id") id: string, @Body() body: unknown) {
-    const parsed = await updateUserSchema.safeParseAsync({
-      params: { id },
-      body,
-    });
-
-    if (!parsed.success) {
-      throw apiHttpException(
-        "Validated Failed",
-        parsed.error.issues.map((issue) => ({
-          path: issue.path[1],
-          message: issue.message,
-        })),
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-
-    const userId = parsed.data.params.id;
+  async update(@Param("id") id: string, @Body() body: UpdateUserDto) {
+    const userId = id;
     if (!userId) {
       throw apiHttpException("User id is required", {}, HttpStatus.BAD_REQUEST);
     }
@@ -72,17 +56,17 @@ export class UsersController {
     }
 
     const update: Parameters<UsersService["updateUser"]>[0] = {};
-    if (parsed.data.body.name !== undefined) {
-      update.name = parsed.data.body.name;
+    if (body.name !== undefined) {
+      update.name = body.name;
     }
-    if (parsed.data.body.email !== undefined) {
-      update.email = parsed.data.body.email;
+    if (body.email !== undefined) {
+      update.email = body.email;
     }
-    if (parsed.data.body.password !== undefined) {
-      update.password = parsed.data.body.password;
+    if (body.password !== undefined) {
+      update.password = body.password;
     }
-    if (parsed.data.body.phone !== undefined) {
-      update.phone = parsed.data.body.phone;
+    if (body.phone !== undefined) {
+      update.phone = body.phone;
     }
     return this.service.updateUser(update, userId);
   }

@@ -19,17 +19,19 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { UpdatedError } from "../../errors/app.error";
 import type { AuthenticatedUser } from "../../types/auth";
 import {
-  addCardsToSetSchema,
-  createSetSchema,
-  deleteSetSchema,
-  generateQuizSchema,
-  listSetsSchema,
-  searchPublicDecksSchema,
-  submitAnswerSchema,
-  submitAnswersSchema,
-  syncProgressSchema,
-  updateSetSchema,
-} from "./study.validator";
+  AddCardsToSetDto,
+  CardInputDto,
+  CreateSetDto,
+  GenerateQuizQueryDto,
+  ListSetsQueryDto,
+  SearchPublicDecksQueryDto,
+  SetIdParamsDto,
+  SubmitAnswerDto,
+  SubmitAnswersDto,
+  SyncProgressDto,
+  UpdateCardInputDto,
+  UpdateSetDto,
+} from "./dto/study.dto";
 import { ApiMessage } from "../../common/decorators/api-message.decorator";
 import { apiHttpException } from "../../common/exceptions/api-http-exception";
 import {
@@ -44,15 +46,6 @@ import type { StudyService } from "./study.tokens";
 type AuthenticatedRequest = FastifyRequest & {
   user?: AuthenticatedUser;
 };
-
-const validationException = (
-  issues: readonly { path: PropertyKey[]; message: string }[],
-) =>
-  apiHttpException(
-    "Validated Failed",
-    issues.map((issue) => ({ path: issue.path[1], message: issue.message })),
-    HttpStatus.BAD_REQUEST,
-  );
 
 const isAbortError = (error: unknown) =>
   typeof error === "object" &&
@@ -83,16 +76,7 @@ const throwStudyError = (
   throw apiHttpException(message || fallbackMessage, error, status);
 };
 
-type CardRequestBody = {
-  term: string;
-  definition: string;
-  audioUrl?: string | undefined;
-  exampleSentence?: string | undefined;
-  imageUrl?: string | undefined;
-  id?: string | undefined;
-};
-
-const toCreateCardInput = (card: CardRequestBody) => ({
+const toCreateCardInput = (card: CardInputDto) => ({
   term: card.term,
   definition: card.definition,
   ...(card.audioUrl !== undefined ? { audioUrl: card.audioUrl } : {}),
@@ -102,7 +86,7 @@ const toCreateCardInput = (card: CardRequestBody) => ({
   ...(card.imageUrl !== undefined ? { imageUrl: card.imageUrl } : {}),
 });
 
-const toUpdateCardInput = (card: CardRequestBody) => ({
+const toUpdateCardInput = (card: UpdateCardInputDto) => ({
   ...toCreateCardInput(card),
   ...(card.id !== undefined ? { id: card.id } : {}),
 });
@@ -119,18 +103,15 @@ export class StudyController {
   @HttpCode(HttpStatus.OK)
   async listSets(
     @Req() request: AuthenticatedRequest,
-    @Query() query: Record<string, unknown>,
+    @Query() query: ListSetsQueryDto,
     @Res() reply: FastifyReply,
   ) {
     const abort = createAbortSignal(reply);
     try {
-      const parsed = await listSetsSchema.safeParseAsync({ query });
-      if (!parsed.success) throw validationException(parsed.error.issues);
-
       const rawJson = await this.study.listSetsRaw(
         request.user?.id,
-        parsed.data.query.cursor,
-        parsed.data.query.limit,
+        query.cursor,
+        query.limit,
         abort.signal,
       );
       // The service caches this exact pre-serialized API envelope. Send the
@@ -163,18 +144,15 @@ export class StudyController {
   @ApiMessage("Flashcard set created successfully")
   async createSet(
     @Req() request: AuthenticatedRequest,
-    @Body() body: unknown,
+    @Body() body: CreateSetDto,
   ) {
     const userId = request.user?.id;
     if (!userId) {
       throw apiHttpException("Unauthorized", {}, HttpStatus.UNAUTHORIZED);
     }
 
-    const parsed = await createSetSchema.safeParseAsync({ body });
-    if (!parsed.success) throw validationException(parsed.error.issues);
-
     try {
-      const { title, description, isPublic, cards } = parsed.data.body;
+      const { title, description, isPublic, cards } = body;
       return await this.study.createSet({
         userId,
         title,
@@ -217,30 +195,24 @@ export class StudyController {
   @ApiMessage("Flashcard set updated successfully")
   async updateSet(
     @Req() request: AuthenticatedRequest,
-    @Param("id") id: string,
-    @Body() body: unknown,
+    @Param() params: SetIdParamsDto,
+    @Body() body: UpdateSetDto,
   ) {
     const userId = request.user?.id;
     if (!userId) {
       throw apiHttpException("Unauthorized", {}, HttpStatus.UNAUTHORIZED);
     }
-    const parsed = await updateSetSchema.safeParseAsync({
-      params: { id },
-      body,
-    });
-    if (!parsed.success) throw validationException(parsed.error.issues);
-
     try {
       return await this.study.updateSet(
-        parsed.data.params.id,
+        params.id,
         userId,
         {
-          title: parsed.data.body.title,
-          isPublic: parsed.data.body.isPublic,
-          ...(parsed.data.body.description !== undefined
-            ? { description: parsed.data.body.description }
+          title: body.title,
+          isPublic: body.isPublic,
+          ...(body.description !== undefined
+            ? { description: body.description }
             : {}),
-          cards: parsed.data.body.cards.map(toUpdateCardInput),
+          cards: body.cards.map(toUpdateCardInput),
         },
       );
     } catch (error) {
@@ -254,17 +226,14 @@ export class StudyController {
   @ApiMessage("Flashcard set deleted successfully")
   async deleteSet(
     @Req() request: AuthenticatedRequest,
-    @Param("id") id: string,
+    @Param() params: SetIdParamsDto,
   ) {
     const userId = request.user?.id;
     if (!userId) {
       throw apiHttpException("Unauthorized", {}, HttpStatus.UNAUTHORIZED);
     }
-    const parsed = await deleteSetSchema.safeParseAsync({ params: { id } });
-    if (!parsed.success) throw validationException(parsed.error.issues);
-
     try {
-      return await this.study.deleteSet(parsed.data.params.id, userId);
+      return await this.study.deleteSet(params.id, userId);
     } catch (error) {
       return throwStudyError(error, "Failed to delete flashcard set", 500);
     }
@@ -276,24 +245,18 @@ export class StudyController {
   @ApiMessage("Cards added successfully")
   async addCardsToSet(
     @Req() request: AuthenticatedRequest,
-    @Param("id") id: string,
-    @Body() body: unknown,
+    @Param() params: SetIdParamsDto,
+    @Body() body: AddCardsToSetDto,
   ) {
     const userId = request.user?.id;
     if (!userId) {
       throw apiHttpException("Unauthorized", {}, HttpStatus.UNAUTHORIZED);
     }
-    const parsed = await addCardsToSetSchema.safeParseAsync({
-      params: { id },
-      body,
-    });
-    if (!parsed.success) throw validationException(parsed.error.issues);
-
     try {
       return await this.study.addCardsToSet(
-        parsed.data.params.id,
+        params.id,
         userId,
-        parsed.data.body.cards.map(toCreateCardInput),
+        body.cards.map(toCreateCardInput),
       );
     } catch (error) {
       return throwStudyError(error, "Failed to add cards", 500);
@@ -306,26 +269,20 @@ export class StudyController {
   @ApiMessage("Quiz generated successfully")
   async generateQuiz(
     @Req() request: AuthenticatedRequest,
-    @Param("id") id: string,
-    @Query() query: Record<string, unknown>,
+    @Param() params: SetIdParamsDto,
+    @Query() query: GenerateQuizQueryDto,
     @Res({ passthrough: true }) reply: FastifyReply,
   ) {
     const abort = createAbortSignal(reply);
     try {
-      const parsed = await generateQuizSchema.safeParseAsync({
-        params: { id },
-        query,
-      });
-      if (!parsed.success) throw validationException(parsed.error.issues);
-
       const questions = await this.study.generateQuiz(
-        parsed.data.params.id,
-        parsed.data.query.limit,
+        params.id,
+        query.limit,
         request.user?.id,
         abort.signal,
       );
       return {
-        setId: parsed.data.params.id,
+        setId: params.id,
         questionCount: questions.length,
         questions,
       };
@@ -343,17 +300,14 @@ export class StudyController {
   @ApiMessage("Answer recorded successfully")
   async submitAnswer(
     @Req() request: AuthenticatedRequest,
-    @Body() body: unknown,
+    @Body() body: SubmitAnswerDto,
   ) {
     const userId = request.user?.id;
     if (!userId) {
       throw apiHttpException("Unauthorized", {}, HttpStatus.UNAUTHORIZED);
     }
-    const parsed = await submitAnswerSchema.safeParseAsync({ body });
-    if (!parsed.success) throw validationException(parsed.error.issues);
-
     try {
-      return await this.study.submitAnswer({ userId, ...parsed.data.body });
+      return await this.study.submitAnswer({ userId, ...body });
     } catch (error) {
       return throwStudyError(error, "Failed to record answer", 500);
     }
@@ -365,17 +319,14 @@ export class StudyController {
   @ApiMessage("Answers recorded successfully")
   async submitAnswers(
     @Req() request: AuthenticatedRequest,
-    @Body() body: unknown,
+    @Body() body: SubmitAnswersDto,
   ) {
     const userId = request.user?.id;
     if (!userId) {
       throw apiHttpException("Unauthorized", {}, HttpStatus.UNAUTHORIZED);
     }
-    const parsed = await submitAnswersSchema.safeParseAsync({ body });
-    if (!parsed.success) throw validationException(parsed.error.issues);
-
     try {
-      return await this.study.submitAnswers({ userId, ...parsed.data.body });
+      return await this.study.submitAnswers({ userId, ...body });
     } catch (error) {
       return throwStudyError(error, "Failed to record answers", 500);
     }
@@ -387,17 +338,14 @@ export class StudyController {
   @ApiMessage("Study session progress synced to database successfully")
   async syncProgress(
     @Req() request: AuthenticatedRequest,
-    @Body() body: unknown,
+    @Body() body: SyncProgressDto,
   ) {
     const userId = request.user?.id;
     if (!userId) {
       throw apiHttpException("Unauthorized", {}, HttpStatus.UNAUTHORIZED);
     }
-    const parsed = await syncProgressSchema.safeParseAsync({ body });
-    if (!parsed.success) throw validationException(parsed.error.issues);
-
     try {
-      return await this.study.syncProgress(userId, parsed.data.body.sessionId);
+      return await this.study.syncProgress(userId, body.sessionId);
     } catch (error) {
       return throwStudyError(
         error,
@@ -419,17 +367,15 @@ export class PublicDeckSearchController {
   @HttpCode(HttpStatus.OK)
   @ApiMessage("Public decks retrieved successfully")
   async search(
-    @Query() query: Record<string, unknown>,
+    @Query() query: SearchPublicDecksQueryDto,
     @Res({ passthrough: true }) reply: FastifyReply,
   ) {
     const abort = createAbortSignal(reply);
     try {
-      const parsed = await searchPublicDecksSchema.safeParseAsync({ query });
-      if (!parsed.success) throw validationException(parsed.error.issues);
       return await this.study.searchPublicDecks(
-        parsed.data.query.q,
-        parsed.data.query.page,
-        parsed.data.query.limit,
+        query.q,
+        query.page,
+        query.limit,
         abort.signal,
       );
     } catch (error) {

@@ -1,11 +1,13 @@
 import { Client } from "@elastic/elasticsearch";
 import { Inject, Injectable, OnApplicationShutdown } from "@nestjs/common";
 import {
-  ELASTICSEARCH_CLIENT,
-  ElasticsearchClientProvider,
   PRISMA_CLIENT,
   PrismaProvider,
-} from "../infrastructure/infrastructure.tokens";
+} from "../../config/infrastructure.tokens";
+import {
+  ELASTICSEARCH_CLIENT,
+  ElasticsearchClientProvider,
+} from "./elasticsearch.tokens";
 
 const INDEX_NAME =
   process.env.ELASTICSEARCH_DECK_INDEX ?? "public_flashcard_decks_v1";

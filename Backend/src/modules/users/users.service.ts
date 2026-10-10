@@ -5,12 +5,11 @@ import crypto, { BinaryLike } from "crypto";
 import { IncludeRelations } from "../../types/query";
 import { Prisma } from "../../generated/prisma";
 import { hasErrorCode, UpdatedError } from "../../errors/app.error";
+import { CACHE_SERVICE, type CacheProvider } from "../cache/cache.tokens";
 import {
-  CACHE_SERVICE,
-  CacheProvider,
   ELASTICSEARCH_SERVICE,
-  ElasticsearchProvider,
-} from "../../infrastructure/infrastructure.tokens";
+  type ElasticsearchProvider,
+} from "../elasticsearch/elasticsearch.tokens";
 import { USER_REPOSITORY } from "./users.tokens";
 import { UserRepository } from "./users.repository";
 interface SearchQuery {

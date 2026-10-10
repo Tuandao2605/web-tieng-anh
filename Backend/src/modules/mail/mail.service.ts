@@ -39,7 +39,7 @@ export class MailService {
       [key: string]: string;
     },
   ) {
-    const viewRoot = path.join(__dirname, "..", "views");
+    const viewRoot = path.join(__dirname, "..", "..", "views");
     const templatePath = path.join(viewRoot, template + ".ejs");
     try {
       let data = await ejs.renderFile(templatePath, options);

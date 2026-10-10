@@ -2,7 +2,7 @@ import { Inject, Injectable } from "@nestjs/common";
 import {
   REDIS_CLIENT,
   type RedisProvider,
-} from "../infrastructure/infrastructure.tokens";
+} from "../../config/infrastructure.tokens";
 
 const positiveNumberFromEnv = (value: string | undefined, fallback: number) => {
   const parsed = Number(value);

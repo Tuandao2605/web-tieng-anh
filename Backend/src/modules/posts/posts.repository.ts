@@ -3,7 +3,7 @@ import { Prisma } from "../../generated/prisma";
 import {
   PRISMA_CLIENT,
   PrismaProvider,
-} from "../../infrastructure/infrastructure.tokens";
+} from "../../config/infrastructure.tokens";
 
 @Injectable()
 export class PostRepository {

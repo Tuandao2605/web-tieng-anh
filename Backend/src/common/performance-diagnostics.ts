@@ -1,6 +1,6 @@
 import { Logger } from "@nestjs/common";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
-import type { RedisProvider } from "../infrastructure/infrastructure.tokens";
+import type { RedisProvider } from "../config/infrastructure.tokens";
 
 const nanosecondsToMilliseconds = (value: number) =>
   Number((value / 1_000_000).toFixed(2));

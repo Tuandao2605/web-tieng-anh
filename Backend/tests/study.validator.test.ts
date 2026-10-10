@@ -1,56 +1,69 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import "reflect-metadata";
+import { plainToInstance } from "class-transformer";
+import { validate } from "class-validator";
 import {
-  generateQuizSchema,
-  listSetsSchema,
-} from "../src/modules/study/study.validator";
+  CreateSetDto,
+  GenerateQuizQueryDto,
+  ListSetsQueryDto,
+} from "../src/modules/study/dto/study.dto";
 
 const validSetId = "64b000000000000000000001";
 
-test("generateQuizSchema defaults limit to 10", () => {
-  const result = generateQuizSchema.parse({
-    params: { id: validSetId },
-    query: {},
-  });
+test("GenerateQuizQueryDto defaults limit and coerces numeric query values", async () => {
+  const defaultQuery = plainToInstance(GenerateQuizQueryDto, {});
+  assert.equal(defaultQuery.limit, 10);
+  assert.deepEqual(await validate(defaultQuery), []);
 
-  assert.equal(result.query.limit, 10);
+  const parsed = plainToInstance(GenerateQuizQueryDto, { limit: "25" });
+  assert.equal(parsed.limit, 25);
+  assert.deepEqual(await validate(parsed), []);
 });
 
-test("generateQuizSchema coerces a valid query limit to number", () => {
-  const result = generateQuizSchema.parse({
-    params: { id: validSetId },
-    query: { limit: "25" },
-  });
-
-  assert.equal(result.query.limit, 25);
-});
-
-test("generateQuizSchema rejects invalid IDs and limits", () => {
-  for (const input of [
-    { params: { id: "invalid" }, query: { limit: "10" } },
-    { params: { id: validSetId }, query: { limit: "not-a-number" } },
-    { params: { id: validSetId }, query: { limit: "0" } },
-    { params: { id: validSetId }, query: { limit: "101" } },
-    { params: { id: validSetId }, query: { limit: "1.5" } },
-  ]) {
-    assert.equal(generateQuizSchema.safeParse(input).success, false);
+test("GenerateQuizQueryDto rejects invalid bounds and non-integer values", async () => {
+  for (const limit of ["not-a-number", "0", "101", "1.5"]) {
+    const dto = plainToInstance(GenerateQuizQueryDto, { limit });
+    assert.notDeepEqual(await validate(dto), [], `expected ${limit} to fail`);
   }
 });
 
-test("listSetsSchema validates cursor pagination", () => {
-  assert.deepEqual(listSetsSchema.parse({ query: {} }).query, { limit: 20 });
-  assert.deepEqual(
-    listSetsSchema.parse({
-      query: { cursor: validSetId, limit: "50" },
-    }).query,
-    { cursor: validSetId, limit: 50 },
-  );
+test("ListSetsQueryDto validates cursor pagination and defaults page size", async () => {
+  const defaultQuery = plainToInstance(ListSetsQueryDto, {});
+  assert.equal(defaultQuery.limit, 20);
+  assert.deepEqual(await validate(defaultQuery), []);
+
+  const validQuery = plainToInstance(ListSetsQueryDto, {
+    cursor: validSetId,
+    limit: "50",
+  });
+  assert.equal(validQuery.limit, 50);
+  assert.deepEqual(await validate(validQuery), []);
 
   for (const query of [
     { cursor: "invalid" },
     { limit: "0" },
     { limit: "51" },
   ]) {
-    assert.equal(listSetsSchema.safeParse({ query }).success, false);
+    const dto = plainToInstance(ListSetsQueryDto, query);
+    assert.notDeepEqual(await validate(dto), []);
   }
+});
+
+test("CreateSetDto preserves defaults, nested card trimming and validation", async () => {
+  const dto = plainToInstance(CreateSetDto, {
+    title: "Deck",
+    cards: [{ term: "  hello  ", definition: "  xin chao  " }],
+  });
+
+  assert.equal(dto.isPublic, true);
+  assert.equal(dto.cards[0]?.term, "hello");
+  assert.equal(dto.cards[0]?.definition, "xin chao");
+  assert.deepEqual(await validate(dto), []);
+
+  const invalidDto = plainToInstance(CreateSetDto, {
+    title: "",
+    cards: [],
+  });
+  assert.notDeepEqual(await validate(invalidDto), []);
 });

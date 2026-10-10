@@ -81,9 +81,9 @@ test("Redis load profile", async (suite) => {
   const { closeRedisConnections, redisClient } =
     await import("../../src/utils/redis");
   const { RateLimitService } =
-    await import("../../src/services/rateLimit.service");
+    await import("../../src/modules/rate-limit/rate-limit.service");
   const { REDIS_CLIENT } =
-    await import("../../src/infrastructure/infrastructure.tokens");
+    await import("../../src/config/infrastructure.tokens");
   const redis = redisClient.getInstance();
   const applicationContext = await createNestTestContext([
     { provide: REDIS_CLIENT, useValue: redis },

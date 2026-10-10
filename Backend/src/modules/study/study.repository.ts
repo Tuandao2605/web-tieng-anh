@@ -1,12 +1,12 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { FlashcardSet } from "../../generated/prisma/client";
-import { BaseRepository } from "../../repositories/base.repository";
+import { BaseRepository } from "../../common/database/base.repository";
 import { CreateCardInput } from "./card.repository";
 import { prisma } from "../../libs/prisma";
 import {
   PRISMA_CLIENT,
   PrismaProvider,
-} from "../../infrastructure/infrastructure.tokens";
+} from "../../config/infrastructure.tokens";
 
 export interface CreateSetInput {
   userId: string;

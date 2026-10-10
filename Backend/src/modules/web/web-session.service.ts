@@ -6,7 +6,7 @@ import { runtimeConfig } from "../../config/runtime";
 import {
   REDIS_CLIENT,
   type RedisProvider,
-} from "../../infrastructure/infrastructure.tokens";
+} from "../../config/infrastructure.tokens";
 import type {
   WebFlash,
   WebIncomingMessage,

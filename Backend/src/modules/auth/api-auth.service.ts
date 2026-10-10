@@ -1,16 +1,16 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { verifyPassword } from "../../utils/hash";
 import { JwtPayLoad, LoginData } from "../../types/auth";
-import type { MailService } from "../../services/mail.service";
+import type { MailService } from "../mail/mail.service";
 import { createHash, randomBytes } from "node:crypto";
 import { hashPassword } from "../../utils/hash";
 import {
   REDIS_CLIENT,
   RedisProvider,
-} from "../../infrastructure/infrastructure.tokens";
+} from "../../config/infrastructure.tokens";
 import { AccessTokenService } from "../../common/services/access-token.service";
 import { USER_REPOSITORY } from "../users/users.tokens";
-import { MAIL_SERVICE } from "./auth.tokens";
+import { MAIL_SERVICE } from "../mail/mail.tokens";
 import { UserRepository } from "../users/users.repository";
 import {
   decodeToken,

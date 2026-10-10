@@ -170,20 +170,19 @@ test("auth, cache, and study-session integration", async (suite) => {
   const { UserProgressRepository } = await import(
     "../../src/modules/study/user-progress.repository"
   );
-  const { CacheService } = await import("../../src/services/cache.service");
+  const { CacheService } = await import("../../src/modules/cache/cache.service");
   const { AccessTokenService } = await import(
     "../../src/common/services/access-token.service"
   );
-  const {
-    CACHE_SERVICE,
-    ELASTICSEARCH_SERVICE,
-    PRISMA_CLIENT,
-    PUBSUB_REDIS_CLIENT,
-    REDIS_CLIENT,
-  } = await import("../../src/infrastructure/infrastructure.tokens");
-  const { MAIL_SERVICE, API_AUTH_SERVICE } = await import(
-    "../../src/modules/auth/auth.tokens"
+  const { PRISMA_CLIENT, PUBSUB_REDIS_CLIENT, REDIS_CLIENT } = await import(
+    "../../src/config/infrastructure.tokens"
   );
+  const { CACHE_SERVICE } = await import("../../src/modules/cache/cache.tokens");
+  const { ELASTICSEARCH_SERVICE } = await import(
+    "../../src/modules/elasticsearch/elasticsearch.tokens"
+  );
+  const { MAIL_SERVICE } = await import("../../src/modules/mail/mail.tokens");
+  const { API_AUTH_SERVICE } = await import("../../src/modules/auth/auth.tokens");
   const { USER_REPOSITORY } = await import("../../src/modules/users/users.tokens");
   const { POSTS_REPOSITORY } = await import("../../src/modules/posts/posts.tokens");
   const {

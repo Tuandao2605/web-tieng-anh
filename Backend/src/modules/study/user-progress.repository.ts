@@ -1,12 +1,12 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { createHash } from "node:crypto";
 import { Prisma, UserCardProgress } from "../../generated/prisma/client";
-import { BaseRepository } from "../../repositories/base.repository";
+import { BaseRepository } from "../../common/database/base.repository";
 import { prisma } from "../../libs/prisma";
 import {
   PRISMA_CLIENT,
   PrismaProvider,
-} from "../../infrastructure/infrastructure.tokens";
+} from "../../config/infrastructure.tokens";
 
 // StudySession.id is a MongoDB ObjectId string. Deriving it from the authenticated
 // user and client session makes retries converge on the same database document

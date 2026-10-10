@@ -5,7 +5,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { runtimeConfig } from "../src/config/runtime";
 import { WebSessionService } from "../src/modules/web/web-session.service";
 import type { WebIncomingMessage } from "../src/modules/web/web-session.types";
-import { REDIS_CLIENT } from "../src/infrastructure/infrastructure.tokens";
+import { REDIS_CLIENT } from "../src/config/infrastructure.tokens";
 import { createNestTestContext } from "./helpers/nest-test-context";
 
 test("web sessions persist in Redis and retain flash messages for one read", async (t) => {

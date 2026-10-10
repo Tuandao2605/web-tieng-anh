@@ -4,8 +4,8 @@ import { prisma } from "../../libs/prisma";
 import {
     PRISMA_CLIENT,
     PrismaProvider,
-} from "../../infrastructure/infrastructure.tokens";
-import { BaseRepository } from "../../repositories/base.repository";
+} from "../../config/infrastructure.tokens";
+import { BaseRepository } from "../../common/database/base.repository";
 
 export interface CreateCardInput {
     term: string;

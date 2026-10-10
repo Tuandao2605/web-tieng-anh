@@ -15,17 +15,18 @@ test("Redis-backed application behavior", async (suite) => {
 
   const { closeRedisConnections, redisClient, pubSubRedis } =
     await import("../../src/utils/redis");
-  const { CacheService } = await import("../../src/services/cache.service");
-  const { RateLimitService } = await import("../../src/services/rateLimit.service");
+  const { CacheService } = await import("../../src/modules/cache/cache.service");
+  const { RateLimitService } = await import("../../src/modules/rate-limit/rate-limit.service");
   const { StudyService } = await import("../../src/modules/study/study.service");
   const redis = redisClient.getInstance();
   const pubSub = pubSubRedis.getInstance();
-  const {
-    CACHE_SERVICE,
-    ELASTICSEARCH_SERVICE,
-    PUBSUB_REDIS_CLIENT,
-    REDIS_CLIENT,
-  } = await import("../../src/infrastructure/infrastructure.tokens");
+  const { PUBSUB_REDIS_CLIENT, REDIS_CLIENT } = await import(
+    "../../src/config/infrastructure.tokens"
+  );
+  const { CACHE_SERVICE } = await import("../../src/modules/cache/cache.tokens");
+  const { ELASTICSEARCH_SERVICE } = await import(
+    "../../src/modules/elasticsearch/elasticsearch.tokens"
+  );
   const {
     DECK_SYNC_ENQUEUE,
     STUDY_REPOSITORY,

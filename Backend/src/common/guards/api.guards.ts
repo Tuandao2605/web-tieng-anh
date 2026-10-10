@@ -8,7 +8,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import type { AuthenticatedUser, RequestAuthContext } from "../../types/auth";
 import type { ApiAuthService } from "../../modules/auth/api-auth.service";
 import { API_AUTH_SERVICE } from "../../modules/auth/auth.tokens";
-import { RateLimitService } from "../../services/rateLimit.service";
+import { RateLimitService } from "../../modules/rate-limit/rate-limit.service";
 import { AccessTokenService } from "../services/access-token.service";
 import { apiHttpException } from "../exceptions/api-http-exception";
 

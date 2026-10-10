@@ -12,8 +12,9 @@ import type { FastifyServerOptions } from "fastify";
 import { runtimeConfig } from "./config/runtime";
 import { ApiEnvelopeInterceptor } from "./common/interceptors/api-envelope.interceptor";
 import { ApiExceptionFilter } from "./common/filters/api-exception.filter";
+import { ApiValidationPipe } from "./common/pipes/api-validation.pipe";
 import { AppModule } from "./app.module";
-import { REDIS_CLIENT } from "./infrastructure/infrastructure.tokens";
+import { REDIS_CLIENT } from "./config/infrastructure.tokens";
 import { startPerformanceDiagnostics } from "./common/performance-diagnostics";
 
 const configuredNestPort = Number(process.env.NEST_PORT);
@@ -86,6 +87,7 @@ const bootstrap = async () => {
 
     app.useGlobalInterceptors(app.get(ApiEnvelopeInterceptor));
     app.useGlobalFilters(app.get(ApiExceptionFilter));
+    app.useGlobalPipes(new ApiValidationPipe());
     app.enableShutdownHooks();
 
     await app.listen(nestPort, "0.0.0.0");

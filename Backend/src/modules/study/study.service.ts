@@ -13,13 +13,14 @@ import {
 } from "../../types/study";
 import { randomUUID } from "node:crypto";
 import {
-  CACHE_SERVICE,
-  CacheProvider,
-  ELASTICSEARCH_SERVICE,
-  ElasticsearchProvider,
   REDIS_CLIENT,
   RedisProvider,
-} from "../../infrastructure/infrastructure.tokens";
+} from "../../config/infrastructure.tokens";
+import { CACHE_SERVICE, type CacheProvider } from "../cache/cache.tokens";
+import {
+  ELASTICSEARCH_SERVICE,
+  type ElasticsearchProvider,
+} from "../elasticsearch/elasticsearch.tokens";
 import {
   DECK_SYNC_ENQUEUE,
   DeckSyncEnqueue,

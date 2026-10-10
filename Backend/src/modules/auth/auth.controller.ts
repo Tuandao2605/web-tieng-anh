@@ -16,11 +16,11 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { hasErrorCode } from "../../errors/app.error";
 import type { AuthenticatedUser } from "../../types/auth";
 import {
-  forgotPasswordSchema,
-  loginSchema,
-  registerSchema,
-  resetPasswordSchema,
-} from "./auth.validator";
+  ForgotPasswordDto,
+  LoginDto,
+  RegisterDto,
+  ResetPasswordDto,
+} from "./dto/auth.dto";
 import { ApiMessage } from "../../common/decorators/api-message.decorator";
 import { apiHttpException } from "../../common/exceptions/api-http-exception";
 import {
@@ -35,13 +35,6 @@ type AuthenticatedRequest = FastifyRequest & {
   user?: AuthenticatedUser;
   token?: string;
 };
-
-const validationException = (issues: readonly { path: PropertyKey[]; message: string }[]) =>
-  apiHttpException(
-    "Validated Failed",
-    issues.map((issue) => ({ path: issue.path[1], message: issue.message })),
-    HttpStatus.BAD_REQUEST,
-  );
 
 const isAbortError = (error: unknown) =>
   typeof error === "object" &&
@@ -73,11 +66,8 @@ export class AuthController {
   @UseGuards(SensitiveAuthRateLimitGuard)
   @HttpCode(HttpStatus.OK)
   @ApiMessage("Login Success")
-  async login(@Body() body: unknown) {
-    const parsed = await loginSchema.safeParseAsync({ body });
-    if (!parsed.success) throw validationException(parsed.error.issues);
-
-    const token = await this.apiAuth.login(parsed.data.body);
+  async login(@Body() body: LoginDto) {
+    const token = await this.apiAuth.login(body);
     if (!token) {
       throw apiHttpException(
         "Email hoac mat khau khong chinh xac",
@@ -93,29 +83,20 @@ export class AuthController {
   @HttpCode(HttpStatus.CREATED)
   @ApiMessage("Register Success")
   async register(
-    @Body() body: unknown,
+    @Body() body: RegisterDto,
     @Res({ passthrough: true }) reply: FastifyReply,
   ) {
-    let parsed: Awaited<ReturnType<typeof registerSchema.safeParseAsync>>;
-    try {
-      parsed = await registerSchema.safeParseAsync({ body });
-    } catch {
+    if (await this.auth.existingEmail(body.email)) {
       throw apiHttpException(
-        "Server Error",
-        {},
-        HttpStatus.INTERNAL_SERVER_ERROR,
+        "Validated Failed",
+        [{ path: "email", message: "Email da ton tai" }],
+        HttpStatus.BAD_REQUEST,
       );
-    }
-    if (!parsed.success) throw validationException(parsed.error.issues);
-    if (await this.auth.existingEmail(parsed.data.body.email)) {
-      throw validationException([
-        { path: ["body", "email"], message: "Email da ton tai" },
-      ]);
     }
 
     const abort = createAbortSignal(reply);
     try {
-      const user = await this.auth.register(parsed.data.body, abort.signal);
+      const user = await this.auth.register(body, abort.signal);
       return {
         id: user.id,
         name: user.name,
@@ -147,12 +128,9 @@ export class AuthController {
   @UseGuards(SensitiveAuthRateLimitGuard)
   @HttpCode(HttpStatus.OK)
   @ApiMessage("Nếu email tồn tại, liên kết đặt lại mật khẩu đã được gửi.")
-  async forgotPassword(@Body() body: unknown) {
-    const parsed = await forgotPasswordSchema.safeParseAsync({ body });
-    if (!parsed.success) throw validationException(parsed.error.issues);
-
+  async forgotPassword(@Body() body: ForgotPasswordDto) {
     try {
-      await this.apiAuth.requestPasswordReset(parsed.data.body.email);
+      await this.apiAuth.requestPasswordReset(body.email);
     } catch (error) {
       // Keep the generic response to prevent email enumeration and SMTP leaks.
       console.error("Password reset email failed", error);
@@ -164,15 +142,12 @@ export class AuthController {
   @UseGuards(SensitiveAuthRateLimitGuard)
   @HttpCode(HttpStatus.OK)
   @ApiMessage("Đặt lại mật khẩu thành công")
-  async resetPassword(@Body() body: unknown) {
-    const parsed = await resetPasswordSchema.safeParseAsync({ body });
-    if (!parsed.success) throw validationException(parsed.error.issues);
-
+  async resetPassword(@Body() body: ResetPasswordDto) {
     let updated: boolean | void;
     try {
       updated = await this.apiAuth.resetPassword(
-        parsed.data.body.token,
-        parsed.data.body.password,
+        body.token,
+        body.password,
       );
     } catch {
       throw apiHttpException(

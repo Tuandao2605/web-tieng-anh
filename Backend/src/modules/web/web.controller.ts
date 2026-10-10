@@ -15,10 +15,11 @@ import {
 import type { FastifyReply } from "fastify";
 import ejs from "ejs";
 import moment from "moment";
+import { plainToInstance } from "class-transformer";
+import { validate } from "class-validator";
 import { emailQueue } from "../../queues";
 import { JOB_DELAY, JOB_NAME } from "../../constants/queue.constants";
-import type { RegisterData } from "../../types/auth";
-import { registerSchema } from "../auth/auth.validator";
+import { RegisterDto } from "../auth/dto/auth.dto";
 import { AUTH_SERVICE } from "../auth/auth.tokens";
 import type { AuthService } from "../auth/auth.tokens";
 import { WebCsrfGuard, WebSessionGuard, type WebRequest } from "./web.guards";
@@ -152,15 +153,18 @@ export class WebController {
     @Body() body: unknown,
     @Res() reply: FastifyReply,
   ) {
-    const parsed = await registerSchema.safeParseAsync({ body });
-    if (!parsed.success) {
+    const registerDto = plainToInstance(RegisterDto, asRecord(body));
+    const validationErrors = await validate(registerDto, {
+      whitelist: true,
+      forbidUnknownValues: false,
+      stopAtFirstError: true,
+    });
+    if (validationErrors.length > 0) {
       const errors = Object.fromEntries(
-        parsed.error.issues.map(
-          (issue: { path: PropertyKey[]; message: string }) => [
-            issue.path[1],
-            issue.message,
-          ],
-        ),
+        validationErrors.flatMap((error) => {
+          const firstMessage = Object.values(error.constraints ?? {})[0];
+          return firstMessage ? [[error.property, firstMessage]] : [];
+        }),
       );
       request.raw.flash("errors", JSON.stringify(errors));
       await this.webSessions.save(request.raw.session);
@@ -170,7 +174,7 @@ export class WebController {
       return reply.redirect(redirectTo);
     }
 
-    if (await this.auth.existingEmail(parsed.data.body.email)) {
+    if (await this.auth.existingEmail(registerDto.email)) {
       request.raw.flash(
         "errors",
         JSON.stringify({ email: "Email da ton tai" }),
@@ -182,7 +186,7 @@ export class WebController {
       return reply.redirect(redirectTo);
     }
 
-    await this.auth.register(parsed.data.body as RegisterData);
+    await this.auth.register(registerDto);
     request.raw.flash("message", "Dang ky tai khoan thanh cong");
     await this.webSessions.save(request.raw.session);
     return reply.redirect("/auth/login");

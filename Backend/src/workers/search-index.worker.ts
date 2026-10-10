@@ -1,7 +1,7 @@
 import { Worker } from "bullmq";
 import { QUEUE_NAME } from "../constants/queue.constants";
 import type { SyncDeckJob } from "../queues/search-index.queue";
-import type { ElasticsearchService } from "../services/elasticsearch.service";
+import type { ElasticsearchService } from "../modules/elasticsearch/elasticsearch.service";
 import { bullmqClient } from "../utils/bullmq";
 import { assertBackgroundWorkerRole } from "../utils/backgroundRuntime";
 
