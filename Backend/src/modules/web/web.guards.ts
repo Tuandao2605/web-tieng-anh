@@ -1,11 +1,17 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { CanActivate, ExecutionContext, Injectable } from "@nestjs/common";
+import {
+  CanActivate,
+  ExecutionContext,
+  Inject,
+  Injectable,
+} from "@nestjs/common";
 import type { FastifyRequest } from "fastify";
 import type { AuthenticatedUser } from "../../types/auth";
-import { authService } from "../../services/auth.service";
+import type { AuthService } from "../auth/auth.service";
+import { AUTH_SERVICE } from "../auth/auth.tokens";
 import type { WebIncomingMessage } from "./web-session.types";
 import { apiHttpException } from "../../common/exceptions/api-http-exception";
-import { attachWebSession, saveWebSession } from "./web-session.service";
+import { WebSessionService } from "./web-session.service";
 
 export type WebRequest = FastifyRequest & {
   raw: WebIncomingMessage;
@@ -18,10 +24,15 @@ const getRequest = (context: ExecutionContext) =>
 
 @Injectable()
 export class WebSessionGuard implements CanActivate {
+  constructor(
+    @Inject(AUTH_SERVICE) private readonly auth: AuthService,
+    private readonly webSessions: WebSessionService,
+  ) {}
+
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = getRequest(context);
     const reply = context.switchToHttp().getResponse();
-    await attachWebSession(request, reply);
+    await this.webSessions.attach(request, reply);
     const session = request.raw.session;
 
     if (!session.csrfToken) {
@@ -30,11 +41,11 @@ export class WebSessionGuard implements CanActivate {
     request.csrfToken = session.csrfToken;
 
     if (session.user?.id) {
-      const user = await authService.profile(session.user.id);
+      const user = await this.auth.profile(session.user.id);
       if (user) request.user = user;
     }
 
-    await saveWebSession(session);
+    await this.webSessions.save(session);
     return true;
   }
 }
@@ -58,8 +69,7 @@ export class WebCsrfGuard implements CanActivate {
       typeof request.body === "object" && request.body !== null
         ? (request.body as Record<string, unknown>)
         : undefined;
-    const bodyToken =
-      typeof body?._csrf === "string" ? body._csrf : undefined;
+    const bodyToken = typeof body?._csrf === "string" ? body._csrf : undefined;
     const headerToken = request.headers["x-csrf-token"];
     const providedToken =
       bodyToken ?? (typeof headerToken === "string" ? headerToken : undefined);

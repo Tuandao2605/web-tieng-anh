@@ -1,8 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type {} from "@fastify/cookie";
+import { Inject, Injectable } from "@nestjs/common";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { runtimeConfig } from "../../config/runtime";
-import { redisClient } from "../../utils/redis";
+import {
+  REDIS_CLIENT,
+  type RedisProvider,
+} from "../../infrastructure/infrastructure.tokens";
 import type {
   WebFlash,
   WebIncomingMessage,
@@ -92,93 +96,96 @@ const runCallback = (
   );
 };
 
-export const attachWebSession = async (
-  request: FastifyRequest,
-  reply: FastifyReply,
-) => {
-  const webRequest = request as FastifyRequest & { raw: WebIncomingMessage };
-  const signedCookie = request.cookies[runtimeConfig.sessionCookieName];
-  const signedValue = signedCookie?.startsWith("s:")
-    ? signedCookie.slice(2)
-    : undefined;
-  const unsignedCookie = signedValue
-    ? request.unsignCookie(signedValue)
-    : undefined;
-  let sessionId = unsignedCookie?.valid ? unsignedCookie.value : undefined;
-  const data = parseSession(
-    sessionId
-      ? await redisClient.getInstance().get(`${SESSION_PREFIX}${sessionId}`)
-      : null,
-  );
-  const save = async () => {
-    sessionId ??= randomUUID();
-    await redisClient
-      .getInstance()
-      .set(
+@Injectable()
+export class WebSessionService {
+  constructor(
+    @Inject(REDIS_CLIENT)
+    private readonly redis: RedisProvider,
+  ) {}
+
+  async attach(request: FastifyRequest, reply: FastifyReply) {
+    const redis = this.redis;
+    const webRequest = request as FastifyRequest & { raw: WebIncomingMessage };
+    const signedCookie = request.cookies[runtimeConfig.sessionCookieName];
+    const signedValue = signedCookie?.startsWith("s:")
+      ? signedCookie.slice(2)
+      : undefined;
+    const unsignedCookie = signedValue
+      ? request.unsignCookie(signedValue)
+      : undefined;
+    let sessionId = unsignedCookie?.valid ? unsignedCookie.value : undefined;
+    const data = parseSession(
+      sessionId ? await redis.get(`${SESSION_PREFIX}${sessionId}`) : null,
+    );
+    const save = async () => {
+      sessionId ??= randomUUID();
+      await redis.set(
         `${SESSION_PREFIX}${sessionId}`,
         JSON.stringify(toStoredSession(session)),
         {
           expiration: { type: "EX", value: SESSION_TTL_SECONDS },
         },
       );
-    reply.setCookie(
-      runtimeConfig.sessionCookieName,
-      `s:${reply.signCookie(sessionId)}`,
-      {
-        ...SESSION_COOKIE_OPTIONS,
-      },
-    );
-  };
+      reply.setCookie(
+        runtimeConfig.sessionCookieName,
+        `s:${reply.signCookie(sessionId)}`,
+        {
+          ...SESSION_COOKIE_OPTIONS,
+        },
+      );
+    };
 
-  const session: WebSession = {
-    ...data,
-    regenerate(callback) {
-      runCallback(callback, async () => {
-        if (sessionId) {
-          await redisClient.getInstance().del(`${SESSION_PREFIX}${sessionId}`);
-        }
-        sessionId = randomUUID();
-        delete session.user;
-        delete session.csrfToken;
-        delete session._flash;
-      });
-    },
-    save(callback) {
-      runCallback(callback, save);
-    },
-    destroy(callback) {
-      runCallback(callback, async () => {
-        if (sessionId) {
-          await redisClient.getInstance().del(`${SESSION_PREFIX}${sessionId}`);
-        }
-        sessionId = undefined;
-        reply.clearCookie(runtimeConfig.sessionCookieName, {
-          path: SESSION_COOKIE_OPTIONS.path,
+    const session: WebSession = {
+      ...data,
+      regenerate(callback) {
+        runCallback(callback, async () => {
+          if (sessionId) {
+            await redis.del(`${SESSION_PREFIX}${sessionId}`);
+          }
+          sessionId = randomUUID();
+          delete session.user;
+          delete session.csrfToken;
+          delete session._flash;
         });
-      });
-    },
-  };
+      },
+      save(callback) {
+        runCallback(callback, save);
+      },
+      destroy(callback) {
+        runCallback(callback, async () => {
+          if (sessionId) {
+            await redis.del(`${SESSION_PREFIX}${sessionId}`);
+          }
+          sessionId = undefined;
+          reply.clearCookie(runtimeConfig.sessionCookieName, {
+            path: SESSION_COOKIE_OPTIONS.path,
+          });
+        });
+      },
+    };
 
-  const flash = ((type: string, message?: string) => {
-    if (message !== undefined) {
-      session._flash ??= {};
-      session._flash[type] ??= [];
-      session._flash[type].push(message);
-      return session._flash[type].length;
-    }
-    const messages = session._flash?.[type] ?? [];
-    if (session._flash) {
-      delete session._flash[type];
-      if (Object.keys(session._flash).length === 0) delete session._flash;
-    }
-    return messages;
-  }) as WebFlash;
+    const flash = ((type: string, message?: string) => {
+      if (message !== undefined) {
+        session._flash ??= {};
+        session._flash[type] ??= [];
+        session._flash[type].push(message);
+        return session._flash[type].length;
+      }
+      const messages = session._flash?.[type] ?? [];
+      if (session._flash) {
+        delete session._flash[type];
+        if (Object.keys(session._flash).length === 0) delete session._flash;
+      }
+      return messages;
+    }) as WebFlash;
 
-  webRequest.raw.session = session;
-  webRequest.raw.flash = flash;
-};
+    webRequest.raw.session = session;
+    webRequest.raw.flash = flash;
+  }
 
-export const saveWebSession = (session: WebSession) =>
-  new Promise<void>((resolve, reject) =>
-    session.save((error) => (error ? reject(error) : resolve())),
-  );
+  save(session: WebSession) {
+    return new Promise<void>((resolve, reject) =>
+      session.save((error) => (error ? reject(error) : resolve())),
+    );
+  }
+}

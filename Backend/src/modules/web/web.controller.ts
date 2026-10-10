@@ -18,12 +18,11 @@ import moment from "moment";
 import { emailQueue } from "../../queues";
 import { JOB_DELAY, JOB_NAME } from "../../constants/queue.constants";
 import type { RegisterData } from "../../types/auth";
-import { registerSchema } from "../../validators/auth.validator";
+import { registerSchema } from "../auth/auth.validator";
 import { AUTH_SERVICE } from "../auth/auth.tokens";
 import type { AuthService } from "../auth/auth.tokens";
 import { WebCsrfGuard, WebSessionGuard, type WebRequest } from "./web.guards";
-import { saveWebSession } from "./web-session.service";
-
+import { WebSessionService } from "./web-session.service";
 
 const viewDirectory = join(__dirname, "../../views");
 const publicDirectory = join(__dirname, "../../../public");
@@ -31,10 +30,7 @@ const publicDirectory = join(__dirname, "../../../public");
 const renderView = (view: string, locals: Record<string, unknown>) =>
   ejs.renderFile(join(viewDirectory, `${view}.ejs`), locals);
 
-const renderPage = async (
-  view: string,
-  locals: Record<string, unknown>,
-) => {
+const renderPage = async (view: string, locals: Record<string, unknown>) => {
   const body = await renderView(view, locals);
   return renderView("layouts/main.layouts", {
     ...locals,
@@ -44,9 +40,13 @@ const renderPage = async (
   });
 };
 
-const flashMessages = async (request: WebRequest, type: string) => {
+const flashMessages = async (
+  request: WebRequest,
+  type: string,
+  webSessions: WebSessionService,
+) => {
   const messages = request.raw.flash(type);
-  await saveWebSession(request.raw.session);
+  await webSessions.save(request.raw.session);
   return messages;
 };
 
@@ -59,6 +59,7 @@ const asRecord = (value: unknown): Record<string, unknown> =>
 export class WebController {
   constructor(
     @Inject(AUTH_SERVICE) private readonly auth: AuthService,
+    private readonly webSessions: WebSessionService,
   ) {}
 
   // The previous static middleware served public/index.html before the EJS
@@ -91,11 +92,8 @@ export class WebController {
 
   @Get("auth/login")
   @UseGuards(WebSessionGuard)
-  async loginPage(
-    @Req() request: WebRequest,
-    @Res() reply: FastifyReply,
-  ) {
-    const message = await flashMessages(request, "message");
+  async loginPage(@Req() request: WebRequest, @Res() reply: FastifyReply) {
+    const message = await flashMessages(request, "message", this.webSessions);
     const html = await renderView("auth/login", {
       csrfToken: request.csrfToken,
       message,
@@ -105,11 +103,12 @@ export class WebController {
 
   @Get("auth/register")
   @UseGuards(WebSessionGuard)
-  async registerPage(
-    @Req() request: WebRequest,
-    @Res() reply: FastifyReply,
-  ) {
-    const flashedErrors = await flashMessages(request, "errors");
+  async registerPage(@Req() request: WebRequest, @Res() reply: FastifyReply) {
+    const flashedErrors = await flashMessages(
+      request,
+      "errors",
+      this.webSessions,
+    );
     let errors: Record<string, unknown> = {};
     try {
       errors = JSON.parse(flashedErrors[0] ?? "{}") as Record<string, unknown>;
@@ -124,6 +123,7 @@ export class WebController {
   }
 
   @Post("auth/login")
+  @HttpCode(HttpStatus.FOUND)
   @UseGuards(WebSessionGuard, WebCsrfGuard)
   async handleLogin(
     @Req() request: WebRequest,
@@ -131,17 +131,15 @@ export class WebController {
     @Res() reply: FastifyReply,
   ) {
     const credentials = asRecord(body);
-    const email = typeof credentials.email === "string" ? credentials.email : "";
+    const email =
+      typeof credentials.email === "string" ? credentials.email : "";
     const password =
       typeof credentials.password === "string" ? credentials.password : "";
-    const loggedIn = await this.auth.login(
-      { email, password },
-      request.raw,
-    );
+    const loggedIn = await this.auth.login({ email, password }, request.raw);
 
     if (!loggedIn) {
       request.raw.flash("message", "Email hoac mat khau khong chinh xac");
-      await saveWebSession(request.raw.session);
+      await this.webSessions.save(request.raw.session);
       return reply.redirect("/auth/login");
     }
     return reply.redirect("/");
@@ -165,27 +163,34 @@ export class WebController {
         ),
       );
       request.raw.flash("errors", JSON.stringify(errors));
-      await saveWebSession(request.raw.session);
+      await this.webSessions.save(request.raw.session);
       const referer = request.headers.referer;
       const redirectTo =
-        typeof referer === "string" && referer.startsWith("/")
-          ? referer
-          : "/";
+        typeof referer === "string" && referer.startsWith("/") ? referer : "/";
+      return reply.redirect(redirectTo);
+    }
+
+    if (await this.auth.existingEmail(parsed.data.body.email)) {
+      request.raw.flash(
+        "errors",
+        JSON.stringify({ email: "Email da ton tai" }),
+      );
+      await this.webSessions.save(request.raw.session);
+      const referer = request.headers.referer;
+      const redirectTo =
+        typeof referer === "string" && referer.startsWith("/") ? referer : "/";
       return reply.redirect(redirectTo);
     }
 
     await this.auth.register(parsed.data.body as RegisterData);
     request.raw.flash("message", "Dang ky tai khoan thanh cong");
-    await saveWebSession(request.raw.session);
+    await this.webSessions.save(request.raw.session);
     return reply.redirect("/auth/login");
   }
 
   @Get("auth/me")
   @UseGuards(WebSessionGuard)
-  async profilePage(
-    @Req() request: WebRequest,
-    @Res() reply: FastifyReply,
-  ) {
+  async profilePage(@Req() request: WebRequest, @Res() reply: FastifyReply) {
     if (!request.user) return reply.redirect("/auth/login");
     const html = await renderPage("auth/profile", {
       csrfToken: request.csrfToken,
