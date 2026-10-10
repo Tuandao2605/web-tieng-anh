@@ -11,7 +11,7 @@ import {
   Query,
   UseGuards,
 } from "@nestjs/common";
-import { updateUserSchema } from "../../validators/user.validator";
+import { updateUserSchema } from "./users.validator";
 import { ApiMessage } from "../../common/decorators/api-message.decorator";
 import { apiHttpException } from "../../common/exceptions/api-http-exception";
 import { ApiRateLimitGuard, JwtAuthGuard } from "../../common/guards/api.guards";

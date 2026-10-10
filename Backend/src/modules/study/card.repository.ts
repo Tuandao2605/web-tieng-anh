@@ -1,6 +1,11 @@
-import { Card } from "../generated/prisma/client";
-import { prisma } from "../libs/prisma";
-import { BaseRepository } from "./base.repository";
+import { Inject, Injectable } from "@nestjs/common";
+import { Card } from "../../generated/prisma/client";
+import { prisma } from "../../libs/prisma";
+import {
+    PRISMA_CLIENT,
+    PrismaProvider,
+} from "../../infrastructure/infrastructure.tokens";
+import { BaseRepository } from "../../repositories/base.repository";
 
 export interface CreateCardInput {
     term: string;
@@ -10,9 +15,12 @@ export interface CreateCardInput {
     imageUrl?: string;
 }
 
-class CardRepository extends BaseRepository<Card, typeof prisma.card> {
-    constructor() {
-        super(prisma.card);
+@Injectable()
+export class CardRepository extends BaseRepository<Card, typeof prisma.card> {
+    constructor(
+        @Inject(PRISMA_CLIENT) prismaClient: PrismaProvider,
+    ) {
+        super(prismaClient.card);
     }
 
     /** Lấy các card ngẫu nhiên để làm distractor cho quiz */
@@ -45,5 +53,3 @@ class CardRepository extends BaseRepository<Card, typeof prisma.card> {
         });
     }
 }
-
-export default new CardRepository();

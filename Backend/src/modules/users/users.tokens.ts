@@ -1,4 +1,5 @@
-import type { usersService } from "../../services/users.service";
+import type { UsersService } from "./users.service";
 
 export const USERS_SERVICE = Symbol("USERS_SERVICE");
-export type UsersService = typeof usersService;
+export const USER_REPOSITORY = Symbol("USER_REPOSITORY");
+export type { UsersService };

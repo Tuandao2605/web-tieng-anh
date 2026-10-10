@@ -1,6 +1,8 @@
-import { prisma } from "../libs/prisma";
-import { LoginData, RegisterData } from "../types/auth";
-import { hashPassword, verifyPassword } from "../utils/hash";
+import { Inject, Injectable } from "@nestjs/common";
+import { LoginData, RegisterData } from "../../types/auth";
+import { hashPassword, verifyPassword } from "../../utils/hash";
+import { USER_REPOSITORY } from "../users/users.tokens";
+import { UserRepository } from "../users/users.repository";
 
 type SessionRequest = {
   session: {
@@ -10,8 +12,14 @@ type SessionRequest = {
   };
 };
 
-export const authService = {
-  register: async (data: RegisterData, signal?: AbortSignal) => {
+@Injectable()
+export class AuthService {
+  constructor(
+    @Inject(USER_REPOSITORY)
+    private readonly users: UserRepository,
+  ) {}
+
+  async register(data: RegisterData, signal?: AbortSignal) {
     // 1. Kiểm tra nếu đã bị hủy trước khi làm tác vụ nặng
     signal?.throwIfAborted();
 
@@ -20,27 +28,21 @@ export const authService = {
     // 2. Kiểm tra lại lần nữa trước khi ghi DB
     signal?.throwIfAborted();
 
-    return await prisma.user.create({
+    return await this.users.create({
       data: {
         ...data,
         password,
       },
       // Hỗ trợ ngắt query nếu Prisma Client/Driver hỗ trợ signal
     });
-  },
-  existingEmail: async (email: string) => {
-    return await prisma.user.count({
-      where: {
-        email,
-      },
-    });
-  },
-  login: async ({ email, password }: LoginData, req: SessionRequest) => {
-    const user = await prisma.user.findUnique({
-      where: {
-        email,
-      },
-    });
+  }
+
+  async existingEmail(email: string) {
+    return this.users.count({ where: { email } });
+  }
+
+  async login({ email, password }: LoginData, req: SessionRequest) {
+    const user = await this.users.findByEmail(email);
     if (!user) return false;
     const hash = user.password;
     if (!(await verifyPassword(password, hash as string))) {
@@ -58,13 +60,10 @@ export const authService = {
       req.session.save((error) => (error ? reject(error) : resolve()));
     });
     return true;
-  },
-  profile: async (id: string) => {
-    const user = await prisma.user.findUnique({
-      where: {
-        id,
-      },
-    });
+  }
+
+  async profile(id: string) {
+    const user = await this.users.findUnique({ where: { id } });
     return user;
-  },
-};
+  }
+}

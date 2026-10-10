@@ -29,7 +29,7 @@ import {
   submitAnswersSchema,
   syncProgressSchema,
   updateSetSchema,
-} from "../../validators/study.validator";
+} from "./study.validator";
 import { ApiMessage } from "../../common/decorators/api-message.decorator";
 import { apiHttpException } from "../../common/exceptions/api-http-exception";
 import {

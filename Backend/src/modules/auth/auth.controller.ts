@@ -20,7 +20,7 @@ import {
   loginSchema,
   registerSchema,
   resetPasswordSchema,
-} from "../../validators/auth.validator";
+} from "./auth.validator";
 import { ApiMessage } from "../../common/decorators/api-message.decorator";
 import { apiHttpException } from "../../common/exceptions/api-http-exception";
 import {
@@ -107,6 +107,11 @@ export class AuthController {
       );
     }
     if (!parsed.success) throw validationException(parsed.error.issues);
+    if (await this.auth.existingEmail(parsed.data.body.email)) {
+      throw validationException([
+        { path: ["body", "email"], message: "Email da ton tai" },
+      ]);
+    }
 
     const abort = createAbortSignal(reply);
     try {

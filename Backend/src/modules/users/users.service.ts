@@ -1,12 +1,18 @@
-import { prisma } from "../libs/prisma";
-import { hashPassword } from "../utils/hash";
-import { cacheService } from "./cache.service";
-import { CACHE } from "../constants/cache.constants";
+import { Inject, Injectable } from "@nestjs/common";
+import { hashPassword } from "../../utils/hash";
+import { CACHE } from "../../constants/cache.constants";
 import crypto, { BinaryLike } from "crypto";
-import { IncludeRelations } from "../types/query";
-import { Prisma } from "../generated/prisma";
-import { hasErrorCode, UpdatedError } from "../errors/app.error";
-import { elasticsearchService } from "./elasticsearch.service";
+import { IncludeRelations } from "../../types/query";
+import { Prisma } from "../../generated/prisma";
+import { hasErrorCode, UpdatedError } from "../../errors/app.error";
+import {
+  CACHE_SERVICE,
+  CacheProvider,
+  ELASTICSEARCH_SERVICE,
+  ElasticsearchProvider,
+} from "../../infrastructure/infrastructure.tokens";
+import { USER_REPOSITORY } from "./users.tokens";
+import { UserRepository } from "./users.repository";
 interface SearchQuery {
   page?: string;
   limit?: string;
@@ -20,7 +26,17 @@ type UserDetailQuery = {
   include?: string | undefined;
 };
 
-export const usersService = {
+@Injectable()
+export class UsersService {
+  constructor(
+    @Inject(USER_REPOSITORY)
+    private readonly users: UserRepository,
+    @Inject(CACHE_SERVICE)
+    private readonly cache: CacheProvider,
+    @Inject(ELASTICSEARCH_SERVICE)
+    private readonly searchIndex: ElasticsearchProvider,
+  ) {}
+
   async getUsers(query: SearchQuery) {
     const {
       page = 1,
@@ -76,14 +92,14 @@ export const usersService = {
         .digest("hex");
     }
 
-    const listVersion = await cacheService.getTracker(
+    const listVersion = await this.cache.getTracker(
       CACHE.USER.TRACKERS.LIST_VERSION,
     );
-    return cacheService.getOrSetWithTag(
+    return this.cache.getOrSetWithTag(
       CACHE.USER.KEYS.LIST(+listVersion, limitNum, pageNum, hashFilters),
       async () => {
         const [users, count] = await Promise.all([
-          prisma.user.findMany({
+          this.users.findMany({
             where,
             omit: {
               password: true,
@@ -92,7 +108,7 @@ export const usersService = {
             take: limitNum,
             include: includeRelations,
           }),
-          prisma.user.count({ where }),
+          this.users.count({ where }),
         ]);
 
         return {
@@ -103,7 +119,8 @@ export const usersService = {
       },
       CACHE.USER.TAGS.LIST(),
     );
-  },
+  }
+
   async getUser(id: string, query: UserDetailQuery) {
     const { include = "" } = query;
     const allowedRelations: (keyof IncludeRelations)[] = [
@@ -122,10 +139,10 @@ export const usersService = {
       });
     }
     try {
-      return await cacheService.getOrSetWithTag(
+      return await this.cache.getOrSetWithTag(
         CACHE.USER.KEYS.DETAIL(id),
         () =>
-          prisma.user.findUnique({
+          this.users.findUnique({
             where: { id },
             omit: { password: true },
             include: includeRelations,
@@ -135,7 +152,8 @@ export const usersService = {
     } catch {
       return false;
     }
-  },
+  }
+
   async createUser(data: {
     name: string;
     email: string;
@@ -155,15 +173,13 @@ export const usersService = {
         },
       };
     }
-    const existingUser = await prisma.user.findUnique({
-      where: { email: data.email },
-    });
+    const existingUser = await this.users.findByEmail(data.email);
 
     if (existingUser) {
       throw new Error("Email already exists");
     }
 
-    const user = await prisma.user.create({
+    const user = await this.users.create({
       data: dataInsert,
       omit: {
         password: true,
@@ -173,11 +189,12 @@ export const usersService = {
       },
     });
     if (user) {
-      cacheService.invalidateGetTracker(CACHE.USER.TRACKERS.LIST_VERSION);
+      this.cache.invalidateGetTracker(CACHE.USER.TRACKERS.LIST_VERSION);
       return user;
     }
     return null;
-  },
+  }
+
   async updateUser(
     data: {
       name?: string;
@@ -204,10 +221,10 @@ export const usersService = {
           },
         };
       }
-      const user = await cacheService.writeThrough(
+      const user = await this.cache.writeThrough(
         CACHE.USER.KEYS.DETAIL(id),
         async () => {
-          const updated = prisma.user.update({
+          const updated = this.users.update({
             where: { id },
             data: dataUpdate,
             include: {
@@ -217,13 +234,13 @@ export const usersService = {
               password: true,
             },
           });
-          await cacheService.invalidateGetTracker(
+          await this.cache.invalidateGetTracker(
             CACHE.USER.TRACKERS.LIST_VERSION,
           );
           return updated;
         },
       );
-      await elasticsearchService.syncDecksByUser(id).catch((error) => {
+      await this.searchIndex.syncDecksByUser(id).catch((error) => {
         console.warn("Unable to sync deck author to Elasticsearch", error);
       });
       return user;
@@ -238,18 +255,12 @@ export const usersService = {
 
       throw new UpdatedError("Internal Server Error", 500, error);
     }
-  },
+  }
 
   async deleteUser(id: string) {
-    const deletePhone = await prisma.phone.deleteMany({
-      where: {
-        user: {
-          id,
-        },
-      },
-    });
+    const deletePhone = await this.users.deletePhonesForUser(id);
     if (deletePhone) {
-      const user = await prisma.user.delete({
+      const user = await this.users.deleteUser({
         where: { id },
         omit: {
           password: true,
@@ -257,9 +268,9 @@ export const usersService = {
       });
       if (user) {
         //invalidate
-        await cacheService.invalidateTag(CACHE.USER.TAGS.ROOT());
+        await this.cache.invalidateTag(CACHE.USER.TAGS.ROOT());
       }
       return user;
     }
-  },
-};
+  }
+}

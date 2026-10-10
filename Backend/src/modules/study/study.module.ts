@@ -1,5 +1,9 @@
 import { Module } from "@nestjs/common";
-import studyService from "../../services/study.service";
+import { StudyService } from "./study.service";
+import { StudyRepository } from "./study.repository";
+import { CardRepository } from "./card.repository";
+import { UserProgressRepository } from "./user-progress.repository";
+import { enqueueDeckSync } from "../../queues/search-index.queue";
 import {
   ApiRateLimitGuard,
   HeavyRateLimitGuard,
@@ -10,12 +14,26 @@ import {
   PublicDeckSearchController,
   StudyController,
 } from "./study.controller";
-import { STUDY_SERVICE } from "./study.tokens";
+import {
+  CARD_REPOSITORY,
+  DECK_SYNC_ENQUEUE,
+  STUDY_REPOSITORY,
+  STUDY_SERVICE,
+  USER_PROGRESS_REPOSITORY,
+} from "./study.tokens";
 
 @Module({
   controllers: [StudyController, PublicDeckSearchController],
   providers: [
-    { provide: STUDY_SERVICE, useValue: studyService },
+    StudyRepository,
+    { provide: STUDY_REPOSITORY, useExisting: StudyRepository },
+    CardRepository,
+    { provide: CARD_REPOSITORY, useExisting: CardRepository },
+    UserProgressRepository,
+    { provide: USER_PROGRESS_REPOSITORY, useExisting: UserProgressRepository },
+    { provide: DECK_SYNC_ENQUEUE, useValue: enqueueDeckSync },
+    StudyService,
+    { provide: STUDY_SERVICE, useExisting: StudyService },
     ApiRateLimitGuard,
     HeavyRateLimitGuard,
     JwtAuthGuard,

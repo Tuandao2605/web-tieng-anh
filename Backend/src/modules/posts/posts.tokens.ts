@@ -1,4 +1,5 @@
-import type { postsService } from "../../services/posts.service";
+import type { PostsService } from "./posts.service";
 
 export const POSTS_SERVICE = Symbol("POSTS_SERVICE");
-export type PostsService = typeof postsService;
+export const POSTS_REPOSITORY = Symbol("POSTS_REPOSITORY");
+export type { PostsService };

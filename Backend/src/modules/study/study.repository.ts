@@ -1,7 +1,12 @@
-import { FlashcardSet } from "../generated/prisma/client";
-import { BaseRepository } from "./base.repository";
+import { Inject, Injectable } from "@nestjs/common";
+import { FlashcardSet } from "../../generated/prisma/client";
+import { BaseRepository } from "../../repositories/base.repository";
 import { CreateCardInput } from "./card.repository";
-import { prisma } from "../libs/prisma";
+import { prisma } from "../../libs/prisma";
+import {
+  PRISMA_CLIENT,
+  PrismaProvider,
+} from "../../infrastructure/infrastructure.tokens";
 
 export interface CreateSetInput {
   userId: string;
@@ -18,12 +23,15 @@ export interface UpdateSetInput {
   cards?: Array<CreateCardInput & { id?: string }>;
 }
 
-class StudyRepository extends BaseRepository<
+@Injectable()
+export class StudyRepository extends BaseRepository<
   FlashcardSet,
   typeof prisma.flashcardSet
 > {
-  constructor() {
-    super(prisma.flashcardSet);
+  constructor(
+    @Inject(PRISMA_CLIENT) private readonly prismaClient: PrismaProvider,
+  ) {
+    super(prismaClient.flashcardSet);
   }
 
   async listSets(
@@ -31,7 +39,7 @@ class StudyRepository extends BaseRepository<
     cursor: string | undefined,
     limit: number,
   ) {
-    const sets = await prisma.flashcardSet.findMany({
+    const sets = await this.prismaClient.flashcardSet.findMany({
       where: userId
         ? { OR: [{ isPublic: true }, { userId }] }
         : { isPublic: true },
@@ -97,7 +105,7 @@ class StudyRepository extends BaseRepository<
     );
     const authors =
       authorIds.length > 0
-        ? await prisma.user.findMany({
+        ? await this.prismaClient.user.findMany({
             where: { id: { in: authorIds } },
             select: { id: true, name: true },
           })
@@ -144,7 +152,7 @@ class StudyRepository extends BaseRepository<
   }
 
   async updateSet(setId: string, userId: string, input: UpdateSetInput) {
-    return prisma.$transaction(async (tx) => {
+    return this.prismaClient.$transaction(async (tx) => {
       const existingSet = await tx.flashcardSet.findUnique({
         where: { id: setId },
         select: { id: true, userId: true, isPublic: true },
@@ -233,7 +241,7 @@ class StudyRepository extends BaseRepository<
   }
 
   async deleteSet(setId: string, userId: string) {
-    const existingSet = await prisma.flashcardSet.findUnique({
+    const existingSet = await this.prismaClient.flashcardSet.findUnique({
       where: { id: setId },
       select: { id: true, userId: true },
     });
@@ -245,14 +253,14 @@ class StudyRepository extends BaseRepository<
       throw error;
     }
 
-    return prisma.flashcardSet.delete({
+    return this.prismaClient.flashcardSet.delete({
       where: { id: setId },
       select: { id: true, isPublic: true, updatedAt: true },
     });
   }
 
   async addCardsToSet(setId: string, userId: string, cards: CreateCardInput[]) {
-    return prisma.$transaction(async (tx) => {
+    return this.prismaClient.$transaction(async (tx) => {
       const existingSet = await tx.flashcardSet.findUnique({
         where: { id: setId },
         select: { userId: true },
@@ -290,5 +298,3 @@ class StudyRepository extends BaseRepository<
     });
   }
 }
-
-export default new StudyRepository();

@@ -1,29 +1,38 @@
-import { verifyPassword } from "../utils/hash";
-import { prisma } from "../libs/prisma";
-import { JwtPayLoad, LoginData } from "../types/auth";
-import { redisClient } from "../utils/redis";
-import { mailService } from "./mail.service";
+import { Inject, Injectable } from "@nestjs/common";
+import { verifyPassword } from "../../utils/hash";
+import { JwtPayLoad, LoginData } from "../../types/auth";
+import type { MailService } from "../../services/mail.service";
 import { createHash, randomBytes } from "node:crypto";
-import { hashPassword } from "../utils/hash";
-const redis = redisClient.getInstance();
+import { hashPassword } from "../../utils/hash";
+import {
+  REDIS_CLIENT,
+  RedisProvider,
+} from "../../infrastructure/infrastructure.tokens";
+import { AccessTokenService } from "../../common/services/access-token.service";
+import { USER_REPOSITORY } from "../users/users.tokens";
+import { MAIL_SERVICE } from "./auth.tokens";
+import { UserRepository } from "../users/users.repository";
 import {
   decodeToken,
   generateRefreshToken,
   generateToken,
   verifyRefreshToken,
-} from "../utils/jwt";
-import {
-  evictAccessToken,
-  verifyAccessTokenCached,
-} from "./accessToken.service";
+} from "../../utils/jwt";
 
-export const apiAuthService = {
-  login: async ({ email, password }: LoginData) => {
-    const user = await prisma.user.findUnique({
-      where: {
-        email,
-      },
-    });
+@Injectable()
+export class ApiAuthService {
+  constructor(
+    @Inject(USER_REPOSITORY)
+    private readonly users: UserRepository,
+    @Inject(REDIS_CLIENT)
+    private readonly redis: RedisProvider,
+    @Inject(MAIL_SERVICE)
+    private readonly mail: MailService,
+    private readonly accessTokens: AccessTokenService,
+  ) {}
+
+  async login({ email, password }: LoginData) {
+    const user = await this.users.findByEmail(email);
     if (!user) return false;
     const hash = user.password;
     if (!(await verifyPassword(password, hash as string))) {
@@ -52,7 +61,7 @@ export const apiAuthService = {
     const jti = (decodeRefreshToken as { jti: string })?.jti;
     const now = Math.floor(Date.now() / 1000);
     const ttl = (decodeRefreshToken as { exp: number })?.exp - now;
-    await redis.set(
+    await this.redis.set(
       `refresh_token:${jti}`,
       JSON.stringify({
         userId: user.id,
@@ -67,15 +76,16 @@ export const apiAuthService = {
       accessToken,
       refreshToken,
     };
-  },
-  requestPasswordReset: async (email: string) => {
-    const user = await prisma.user.findUnique({ where: { email } });
+  }
+
+  async requestPasswordReset(email: string) {
+    const user = await this.users.findByEmail(email);
     // Không cho client biết email có tồn tại hay không.
     if (!user) return;
 
     const token = randomBytes(32).toString("hex");
     const tokenHash = createHash("sha256").update(token).digest("hex");
-    await redis.set(
+    await this.redis.set(
       `password_reset:${tokenHash}`,
       JSON.stringify({ userId: user.id }),
       { EX: 900 },
@@ -83,7 +93,7 @@ export const apiAuthService = {
 
     const frontendUrl = process.env.FRONTEND_URL ?? "http://localhost:5500";
     const resetUrl = `${frontendUrl}/reset-password?token=${encodeURIComponent(token)}`;
-    await mailService.sendMail(
+    await this.mail.sendMail(
       user.email,
       "Đặt lại mật khẩu Quizlet Pro",
       `<p>Xin chào,</p>
@@ -91,47 +101,49 @@ export const apiAuthService = {
        <p><a href="${resetUrl}">Đặt lại mật khẩu</a></p>
        <p>Nếu bạn không yêu cầu thao tác này, hãy bỏ qua email.</p>`,
     );
-  },
-  resetPassword: async (token: string, password: string) => {
+  }
+
+  async resetPassword(token: string, password: string) {
     const tokenHash = createHash("sha256").update(token).digest("hex");
     const resetKey = `password_reset:${tokenHash}`;
     // Atomically consume the one-time token so concurrent requests cannot both
     // obtain the reset payload.
-    const raw = await redis.getDel(resetKey);
+    const raw = await this.redis.getDel(resetKey);
     if (!raw) return false;
 
     const { userId } = JSON.parse(raw) as { userId: string };
     const passwordHash = await hashPassword(password);
-    await prisma.user.update({
-      where: { id: userId },
-      data: { password: passwordHash },
-    });
+    await this.users.updatePassword(userId, passwordHash);
     return true;
-  },
-  getProfile: async (token: string) => {
+  }
+
+  async getProfile(token: string) {
     if (!token) return false;
 
-    const principal = verifyAccessTokenCached(token);
+    const principal = this.accessTokens.verifyCached(token);
     if (!principal) return false;
 
     // Standalone callers (for example WebSocket authentication) still perform
     // a strongly consistent revocation check. HTTP middleware pipelines this
     // EXISTS with its token-bucket command and reuses the resulting context.
-    const isRevoked = await redis.exists(`blacklist_token:${principal.jti}`);
+    const isRevoked = await this.redis.exists(
+      `blacklist_token:${principal.jti}`,
+    );
     if (isRevoked) {
-      evictAccessToken(token);
+      this.accessTokens.evict(token);
       return false;
     }
     return principal.user;
-  },
-  logout: async (token: string, userId: string) => {
+  }
+
+  async logout(token: string, userId: string) {
     const decoded = decodeToken(token);
     const jti = (decoded as { jti: string }).jti;
     const now = Math.floor(Date.now() / 1000);
     const ttl = (decoded as { exp: number }).exp - now;
     // Evict raw token from in-process cache
-    evictAccessToken(token);
-    const blacklist = await redis.set(
+    this.accessTokens.evict(token);
+    const blacklist = await this.redis.set(
       `blacklist_token:${jti}`,
       JSON.stringify({
         userId,
@@ -142,8 +154,9 @@ export const apiAuthService = {
       },
     );
     return blacklist;
-  },
-  refreshToken: async (refreshToken: string) => {
+  }
+
+  async refreshToken(refreshToken: string) {
     const decoded = verifyRefreshToken(refreshToken);
     if (!decoded) return false;
 
@@ -153,7 +166,7 @@ export const apiAuthService = {
 
     // Atomically consume the old refresh token. Of concurrent requests using
     // the same token, only the first one can rotate it.
-    const oldTokenData = await redis.getDel(`refresh_token:${jti}`);
+    const oldTokenData = await this.redis.getDel(`refresh_token:${jti}`);
     if (!oldTokenData) return false;
 
     try {
@@ -182,7 +195,7 @@ export const apiAuthService = {
     const ttl = (jtiRefreshToken as { exp: number })?.exp - now;
     if (!newJti || !Number.isFinite(ttl) || ttl <= 0) return false;
 
-    await redis.set(
+    await this.redis.set(
       `refresh_token:${newJti}`,
       JSON.stringify({
         userId,
@@ -197,24 +210,13 @@ export const apiAuthService = {
       accessToken: newaccessToken,
       refreshToken: newRefreshToken,
     };
-  },
+  }
 
-  cleanBlacklist: async () => {
-    await prisma.tokenBlacklist.deleteMany({
-      where: {
-        ttl: {
-          lte: new Date(),
-        },
-      },
-    });
-  },
-  cleanRefreshToken: async () => {
-    await prisma.refreshToken.deleteMany({
-      where: {
-        ttl: {
-          lte: new Date(),
-        },
-      },
-    });
-  },
-};
+  async cleanBlacklist() {
+    await this.users.deleteExpiredBlacklists(new Date());
+  }
+
+  async cleanRefreshToken() {
+    await this.users.deleteExpiredRefreshTokens(new Date());
+  }
+}

@@ -1,22 +1,31 @@
-import { redisClient } from "../utils/redis";
-import { cacheService } from "./cache.service";
-import { hasErrorCode, UpdatedError } from "../errors/app.error";
-import type { Card } from "../generated/prisma/client";
-import studyRepository, {
-  CreateSetInput,
-  UpdateSetInput,
-} from "../repositories/study.repository";
-import type { CreateCardInput } from "../repositories/card.repository";
-import userProgressRepository from "../repositories/user-progress.repository";
-import { elasticsearchService } from "./elasticsearch.service";
-import { enqueueDeckSync } from "../queues/search-index.queue";
+import { Inject, Injectable } from "@nestjs/common";
+import { hasErrorCode, UpdatedError } from "../../errors/app.error";
+import type { Card } from "../../generated/prisma/client";
+import type { CreateSetInput, UpdateSetInput } from "./study.repository";
+import { StudyRepository } from "./study.repository";
+import type { CreateCardInput } from "./card.repository";
+import { UserProgressRepository } from "./user-progress.repository";
 import {
   QuizQuestion,
   SessionProgressState,
   BatchSubmitAnswersInput,
   SubmitAnswerInput,
-} from "../types/study";
+} from "../../types/study";
 import { randomUUID } from "node:crypto";
+import {
+  CACHE_SERVICE,
+  CacheProvider,
+  ELASTICSEARCH_SERVICE,
+  ElasticsearchProvider,
+  REDIS_CLIENT,
+  RedisProvider,
+} from "../../infrastructure/infrastructure.tokens";
+import {
+  DECK_SYNC_ENQUEUE,
+  DeckSyncEnqueue,
+  STUDY_REPOSITORY,
+  USER_PROGRESS_REPOSITORY,
+} from "./study.tokens";
 
 const positiveNumberFromEnv = (value: string | undefined, fallback: number) => {
   const parsed = Number(value);
@@ -150,10 +159,22 @@ return cjson.encode(results)
 
 // ─── Service ──────────────────────────────────────────────────────────────────
 
+@Injectable()
 export class StudyService {
-  private get redis() {
-    return redisClient.getInstance();
-  }
+  constructor(
+    @Inject(REDIS_CLIENT)
+    private readonly redis: RedisProvider,
+    @Inject(CACHE_SERVICE)
+    private readonly cache: CacheProvider,
+    @Inject(STUDY_REPOSITORY)
+    private readonly studyRepo: StudyRepository,
+    @Inject(USER_PROGRESS_REPOSITORY)
+    private readonly progressRepo: UserProgressRepository,
+    @Inject(ELASTICSEARCH_SERVICE)
+    private readonly searchIndex: ElasticsearchProvider,
+    @Inject(DECK_SYNC_ENQUEUE)
+    private readonly enqueueSync: DeckSyncEnqueue,
+  ) {}
 
   private async invalidateSetCaches(
     userId: string,
@@ -161,22 +182,22 @@ export class StudyService {
     affectsPublic: boolean,
   ) {
     const trackers = [
-      cacheService.invalidateGetTracker(userSetsVersionKey(userId)),
+      this.cache.invalidateGetTracker(userSetsVersionKey(userId)),
     ];
     if (setId) {
       trackers.push(
-        cacheService.invalidateGetTracker(setDetailVersionKey(setId)),
+        this.cache.invalidateGetTracker(setDetailVersionKey(setId)),
       );
     }
     if (affectsPublic) {
-      trackers.push(cacheService.invalidateGetTracker(PUBLIC_SETS_VERSION_KEY));
+      trackers.push(this.cache.invalidateGetTracker(PUBLIC_SETS_VERSION_KEY));
     }
     await Promise.all(trackers);
   }
 
   private async scheduleDeckSync(deckId: string, mutationVersion: number) {
     try {
-      await enqueueDeckSync(deckId, mutationVersion);
+      await this.enqueueSync(deckId, mutationVersion);
     } catch (error) {
       // The MongoDB write is already committed. Do not turn a temporary queue
       // outage into a misleading failed write response; the reindex command is
@@ -238,18 +259,18 @@ export class StudyService {
     signal?: AbortSignal,
   ): Promise<string> {
     const [publicVersion, userVersion] = await Promise.all([
-      cacheService.getTracker(PUBLIC_SETS_VERSION_KEY),
+      this.cache.getTracker(PUBLIC_SETS_VERSION_KEY),
       userId
-        ? cacheService.getTracker(userSetsVersionKey(userId))
+        ? this.cache.getTracker(userSetsVersionKey(userId))
         : Promise.resolve("anonymous"),
     ]);
     const scope = userId ? `user:${userId}:v${userVersion}` : "public";
     const pageCursor = cursor ?? "first";
     const cacheKey = `sets:list:summary:v2:${scope}:public-v${publicVersion}:limit:${limit}:cursor:${pageCursor}`;
 
-    return cacheService.getOrSetRawWithTag(
+    return this.cache.getOrSetRawWithTag(
       cacheKey,
-      () => studyRepository.listSets(userId, cursor, limit),
+      () => this.studyRepo.listSets(userId, cursor, limit),
       [],
       300,
       (data) => ({
@@ -273,7 +294,7 @@ export class StudyService {
     const normalizedKeyword = keyword.trim();
     let result;
     try {
-      result = await elasticsearchService.searchPublicDecks(
+      result = await this.searchIndex.searchPublicDecks(
         normalizedKeyword,
         page,
         limit,
@@ -290,7 +311,7 @@ export class StudyService {
           error,
         );
       }
-      result = await studyRepository.searchPublicSets(
+      result = await this.studyRepo.searchPublicSets(
         normalizedKeyword,
         page,
         limit,
@@ -320,7 +341,7 @@ export class StudyService {
   // ── 2. Create Set ───────────────────────────────────────────────────────────
 
   async createSet(input: CreateSetInput) {
-    const newSet = await studyRepository.createSet(input);
+    const newSet = await this.studyRepo.createSet(input);
     await this.invalidateSetCaches(input.userId, undefined, newSet.isPublic);
     await this.scheduleDeckSync(newSet.id, newSet.updatedAt.getTime());
     return newSet;
@@ -329,7 +350,7 @@ export class StudyService {
   // ── 3. Update Set ───────────────────────────────────────────────────────────
 
   async updateSet(setId: string, userId: string, input: UpdateSetInput) {
-    const updateResult = await studyRepository
+    const updateResult = await this.studyRepo
       .updateSet(setId, userId, input)
       .catch((error: unknown) => {
         if (hasErrorCode(error, "P2025"))
@@ -349,7 +370,7 @@ export class StudyService {
   // ── 4. Add Cards to Set ─────────────────────────────────────────────────────
 
   async deleteSet(setId: string, userId: string) {
-    const deleted = await studyRepository
+    const deleted = await this.studyRepo
       .deleteSet(setId, userId)
       .catch((error: unknown) => {
         if (hasErrorCode(error, "P2025")) {
@@ -368,7 +389,7 @@ export class StudyService {
   }
 
   async addCardsToSet(setId: string, userId: string, cards: CreateCardInput[]) {
-    const updated = await studyRepository
+    const updated = await this.studyRepo
       .addCardsToSet(setId, userId, cards)
       .catch((error: unknown) => {
         if (hasErrorCode(error, "P2025"))
@@ -384,11 +405,11 @@ export class StudyService {
   // ── 5. Get Set by ID (Cache-Aside, TTL 1h) ──────────────────────────────────
 
   async getSetById(setId: string, userId?: string, signal?: AbortSignal) {
-    const version = await cacheService.getTracker(setDetailVersionKey(setId));
-    const set = await cacheService.getOrSetWithTag(
+    const version = await this.cache.getTracker(setDetailVersionKey(setId));
+    const set = await this.cache.getOrSetWithTag(
       `set:${setId}:v${version}:cards`,
       async () => {
-        const set = await studyRepository.findSetById(setId);
+        const set = await this.studyRepo.findSetById(setId);
         if (!set) throw new UpdatedError("Flashcard set not found", 404);
         return set;
       },
@@ -532,7 +553,7 @@ export class StudyService {
     return this.withSessionLock(sessionKey, async () => {
       // MongoDB is the durable idempotency authority. This check also covers the
       // crash window where the transaction committed but Redis cleanup did not.
-      const existingSession = await userProgressRepository.findSyncedSession(
+      const existingSession = await this.progressRepo.findSyncedSession(
         userId,
         sessionId,
       );
@@ -567,7 +588,7 @@ export class StudyService {
           ? Math.round((sessionState.correctCount / totalCards) * 100)
           : 0;
 
-      const savedSession = await userProgressRepository.syncSessionProgress(
+      const savedSession = await this.progressRepo.syncSessionProgress(
         userId,
         sessionId,
         sessionState.setId,
@@ -584,5 +605,3 @@ export class StudyService {
     });
   }
 }
-
-export default new StudyService();

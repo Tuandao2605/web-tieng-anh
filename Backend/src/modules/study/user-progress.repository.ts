@@ -1,7 +1,12 @@
+import { Inject, Injectable } from "@nestjs/common";
 import { createHash } from "node:crypto";
-import { Prisma, UserCardProgress } from "../generated/prisma/client";
-import { BaseRepository } from "./base.repository";
-import { prisma } from "../libs/prisma";
+import { Prisma, UserCardProgress } from "../../generated/prisma/client";
+import { BaseRepository } from "../../repositories/base.repository";
+import { prisma } from "../../libs/prisma";
+import {
+  PRISMA_CLIENT,
+  PrismaProvider,
+} from "../../infrastructure/infrastructure.tokens";
 
 // StudySession.id is a MongoDB ObjectId string. Deriving it from the authenticated
 // user and client session makes retries converge on the same database document
@@ -26,12 +31,15 @@ export interface UpdateCardProgressInput {
   lastReviewedAt: Date;
 }
 
-class UserProgressRepository extends BaseRepository<
+@Injectable()
+export class UserProgressRepository extends BaseRepository<
   UserCardProgress,
   typeof prisma.userCardProgress
 > {
-  constructor() {
-    super(prisma.userCardProgress);
+  constructor(
+    @Inject(PRISMA_CLIENT) private readonly prismaClient: PrismaProvider,
+  ) {
+    super(prismaClient.userCardProgress);
   }
 
   async getUserProgressForCards(userId: string, cardIds: string[]) {
@@ -41,7 +49,7 @@ class UserProgressRepository extends BaseRepository<
   }
 
   async findSyncedSession(userId: string, clientSessionId: string) {
-    return prisma.studySession.findUnique({
+    return this.prismaClient.studySession.findUnique({
       where: {
         id: getStudySessionDocumentId(userId, clientSessionId),
       },
@@ -62,7 +70,7 @@ class UserProgressRepository extends BaseRepository<
       clientSessionId,
     );
 
-    return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    return this.prismaClient.$transaction(async (tx: Prisma.TransactionClient) => {
       // The deterministic _id is the durable idempotency boundary. If the
       // process commits MongoDB and crashes before deleting Redis state, a
       // retry updates the same document instead of creating a duplicate.
@@ -117,5 +125,3 @@ class UserProgressRepository extends BaseRepository<
     });
   }
 }
-
-export default new UserProgressRepository();

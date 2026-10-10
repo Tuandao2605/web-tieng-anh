@@ -1,18 +1,35 @@
-import { Module } from "@nestjs/common";
-import { apiAuthService } from "../../services/apiAuth.service";
-import { authService } from "../../services/auth.service";
-import { ApiRateLimitGuard, JwtAuthGuard, SensitiveAuthRateLimitGuard } from "../../common/guards/api.guards";
+import { Global, Module } from "@nestjs/common";
+import { ApiAuthService } from "./api-auth.service";
+import { AuthService } from "./auth.service";
+import {
+  ApiRateLimitGuard,
+  JwtAuthGuard,
+  SensitiveAuthRateLimitGuard,
+} from "../../common/guards/api.guards";
 import { AuthController } from "./auth.controller";
-import { API_AUTH_SERVICE, AUTH_SERVICE } from "./auth.tokens";
+import { API_AUTH_SERVICE, AUTH_SERVICE, MAIL_SERVICE } from "./auth.tokens";
+import { MailService } from "../../services/mail.service";
+import { UserRepository } from "../users/users.repository";
+import { USER_REPOSITORY } from "../users/users.tokens";
+import { AccessTokenService } from "../../common/services/access-token.service";
 
+@Global()
 @Module({
   controllers: [AuthController],
   providers: [
-    { provide: API_AUTH_SERVICE, useValue: apiAuthService },
-    { provide: AUTH_SERVICE, useValue: authService },
+    UserRepository,
+    { provide: USER_REPOSITORY, useExisting: UserRepository },
+    MailService,
+    { provide: MAIL_SERVICE, useExisting: MailService },
+    AccessTokenService,
+    ApiAuthService,
+    { provide: API_AUTH_SERVICE, useExisting: ApiAuthService },
+    AuthService,
+    { provide: AUTH_SERVICE, useExisting: AuthService },
     ApiRateLimitGuard,
     JwtAuthGuard,
     SensitiveAuthRateLimitGuard,
   ],
+  exports: [API_AUTH_SERVICE, AUTH_SERVICE, AccessTokenService],
 })
 export class AuthModule {}

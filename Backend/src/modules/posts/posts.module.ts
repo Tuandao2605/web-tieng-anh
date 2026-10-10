@@ -1,13 +1,17 @@
 import { Module } from "@nestjs/common";
-import { postsService } from "../../services/posts.service";
+import { PostsService } from "./posts.service";
 import { ApiRateLimitGuard, JwtAuthGuard } from "../../common/guards/api.guards";
 import { PostsController } from "./posts.controller";
-import { POSTS_SERVICE } from "./posts.tokens";
+import { POSTS_REPOSITORY, POSTS_SERVICE } from "./posts.tokens";
+import { PostRepository } from "./posts.repository";
 
 @Module({
   controllers: [PostsController],
   providers: [
-    { provide: POSTS_SERVICE, useValue: postsService },
+    PostRepository,
+    { provide: POSTS_REPOSITORY, useExisting: PostRepository },
+    PostsService,
+    { provide: POSTS_SERVICE, useExisting: PostsService },
     ApiRateLimitGuard,
     JwtAuthGuard,
   ],
