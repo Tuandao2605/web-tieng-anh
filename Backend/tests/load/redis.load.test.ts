@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { startRedisTestServer } from "../helpers/redis-test-server";
+import { createNestTestContext } from "../helpers/nest-test-context";
 
 const positiveIntegerFromEnv = (
   value: string | undefined,
@@ -79,9 +80,16 @@ test("Redis load profile", async (suite) => {
 
   const { closeRedisConnections, redisClient } =
     await import("../../src/utils/redis");
-  const { consumeRateLimitToken } =
+  const { RateLimitService } =
     await import("../../src/services/rateLimit.service");
+  const { REDIS_CLIENT } =
+    await import("../../src/infrastructure/infrastructure.tokens");
   const redis = redisClient.getInstance();
+  const applicationContext = await createNestTestContext([
+    { provide: REDIS_CLIENT, useValue: redis },
+    RateLimitService,
+  ]);
+  const rateLimits = applicationContext.get(RateLimitService);
 
   try {
     assert.equal(await redis.ping(), "PONG");
@@ -100,7 +108,7 @@ test("Redis load profile", async (suite) => {
 
     await suite.test("parallel Lua token-bucket workload", async (t) => {
       const metrics = await runLoad(total, concurrency, async () => {
-        const result = await consumeRateLimitToken("load-client", {
+        const result = await rateLimits.consumeToken("load-client", {
           namespace: `load-${process.pid}`,
           bucketCapacity: total + 1,
           refillPerMs: 0.001,
@@ -113,6 +121,7 @@ test("Redis load profile", async (suite) => {
       assert.ok(metrics.p99Ms <= maximumP99Ms);
     });
   } finally {
+    await applicationContext.close();
     await closeRedisConnections();
     await server.stop();
     delete process.env.REDIS_URL;

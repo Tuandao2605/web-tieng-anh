@@ -62,14 +62,16 @@ services:
     ports:
       - "8081:8081"
     environment:
-      ME_CONFIG_MONGODB_ADMINUSERNAME: root
-      ME_CONFIG_MONGODB_ADMINPASSWORD: 123456
-      ME_CONFIG_MONGODB_SERVER: mongo-db
-      ME_CONFIG_MONGODB_AUTH_DATABASE: admin
+      # Connect directly to the Docker service instead of following the
+      # single-member replica-set address (localhost:27017), which resolves
+      # to the mongo-express container itself.
+      ME_CONFIG_MONGODB_URL: "mongodb://root:123456@mongo-db:27017/admin?authSource=admin&directConnection=true"
+      ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
       ME_CONFIG_BASICAUTH_USERNAME: admin
       ME_CONFIG_BASICAUTH_PASSWORD: adminpassword
     depends_on:
-      - mongo-db
+      mongo-replica-init:
+        condition: service_completed_successfully
 
   # 5. Redis for auth tokens, cache, sessions and BullMQ
   redis:

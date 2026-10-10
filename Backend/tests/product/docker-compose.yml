@@ -114,7 +114,9 @@ services:
     ports:
       - "127.0.0.1:38080:8080"
     volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx.conf:/etc/nginx/default.conf.template:ro
+      - ./start-nginx.sh:/usr/local/bin/start-nginx.sh:ro
+    command: ["/bin/sh", "/usr/local/bin/start-nginx.sh"]
     extra_hosts:
       # A custom alias avoids Docker Desktop's special dual-stack DNS entry for
       # host.docker.internal, whose unreachable IPv6 address causes random 502s.

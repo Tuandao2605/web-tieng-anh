@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -9,6 +10,7 @@ import {
   type Socket,
 } from "node:net";
 import { performance } from "node:perf_hooks";
+import { cpus } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { createClient, type RedisClientType } from "redis";
@@ -345,6 +347,270 @@ const runHttpLoad = async (
   };
 };
 
+const runPacedHttpLoad = async (
+  durationMs: number,
+  targetRps: number,
+  concurrency: number,
+  operation: (index: number) => Promise<number>,
+) => {
+  const total = Math.floor((durationMs * targetRps) / 1_000);
+  const startedAt = performance.now();
+  let nextIndex = 0;
+  const latencies: number[] = [];
+  const responses: Record<string, number> = {};
+
+  await Promise.all(
+    Array.from({ length: concurrency }, async () => {
+      while (true) {
+        const index = nextIndex;
+        nextIndex += 1;
+        if (index >= total) return;
+
+        const scheduledAt = startedAt + (index * 1_000) / targetRps;
+        const pacingDelay = scheduledAt - performance.now();
+        if (pacingDelay > 0) await wait(pacingDelay);
+
+        const requestStartedAt = performance.now();
+        try {
+          const status = await operation(index);
+          const responseKey = String(status);
+          responses[responseKey] = (responses[responseKey] ?? 0) + 1;
+        } catch {
+          responses.transport_error = (responses.transport_error ?? 0) + 1;
+        }
+        latencies.push(performance.now() - requestStartedAt);
+      }
+    }),
+  );
+
+  const duration = performance.now() - startedAt;
+  latencies.sort((left, right) => left - right);
+  const successful = responses["200"] ?? 0;
+  return {
+    offeredRequests: total,
+    concurrency,
+    targetRps,
+    durationMs: duration,
+    completedRequests: latencies.length,
+    requestsPerSecond: latencies.length / (duration / 1_000),
+    successfulRequestsPerSecond: successful / (duration / 1_000),
+    unsuccessfulResponsesPerSecond:
+      (latencies.length - successful) / (duration / 1_000),
+    errorRate: (latencies.length - successful) / Math.max(1, latencies.length),
+    responses,
+    p50Ms: percentile(latencies, 0.5),
+    p95Ms: percentile(latencies, 0.95),
+    p99Ms: percentile(latencies, 0.99),
+  };
+};
+
+const runOpenLoopHttpLoad = async (
+  durationMs: number,
+  targetRps: number,
+  maxInFlight: number,
+  token: string,
+  userId: string,
+) => {
+  const output = await runCommand(
+    process.execPath,
+    [join(__dirname, "open-loop-http-load.cjs")],
+    {
+      cwd: BACKEND_DIRECTORY,
+      env: {
+        ...process.env,
+        PRODUCT_LOAD_URL: NGINX_URL,
+        PRODUCT_LOAD_DURATION_MS: String(durationMs),
+        PRODUCT_LOAD_TARGET_RPS: String(targetRps),
+        PRODUCT_LOAD_MAX_IN_FLIGHT: String(maxInFlight),
+        PRODUCT_LOAD_TOKEN: token,
+        PRODUCT_LOAD_USER_ID: userId,
+      },
+      timeoutMs: Math.max(120_000, durationMs * 10),
+    },
+  );
+  return JSON.parse(output) as {
+    offeredRequests: number;
+    launchedRequests: number;
+    completedRequests: number;
+    clientDroppedRequests: number;
+    maxInFlight: number;
+    maxObservedInFlight: number;
+    targetRps: number;
+    durationMs: number;
+    loadWindowMs: number;
+    requestsPerSecond: number;
+    successfulRequestsPerSecond: number;
+    successfulRequestsPerSecondDuringWindow: number;
+    maxScheduleLagMs: number;
+    errorRate: number;
+    responses: Record<string, number>;
+    p50Ms: number;
+    p95Ms: number;
+    p99Ms: number;
+    failedResponseSamples: Array<Record<string, unknown>>;
+  };
+};
+
+type LinuxProcessSnapshot = {
+  systemTicks: number;
+  processes: Record<number, { processTicks: number; rssKb: number }>;
+};
+
+const readLinuxProcessSnapshot = async (
+  pids: number[],
+): Promise<LinuxProcessSnapshot | undefined> => {
+  if (process.platform !== "linux") return undefined;
+
+  try {
+    const cpuStat = await readFile("/proc/stat", "utf8");
+    const cpuLine = cpuStat.split("\n", 1)[0];
+    if (!cpuLine) return undefined;
+    const systemTicks = cpuLine
+      .trim()
+      .split(/\s+/)
+      .slice(1)
+      .map(Number)
+      .reduce((total, tick) => total + tick, 0);
+    const processEntries = await Promise.all(
+      pids.map(async (pid) => {
+        try {
+          const [stat, status] = await Promise.all([
+            readFile(`/proc/${pid}/stat`, "utf8"),
+            readFile(`/proc/${pid}/status`, "utf8"),
+          ]);
+          const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+          const processTicks = Number(fields[11]) + Number(fields[12]);
+          const rssKb = Number(status.match(/^VmRSS:\s+(\d+)/m)?.[1] ?? 0);
+          return [pid, { processTicks, rssKb }] as const;
+        } catch {
+          return undefined;
+        }
+      }),
+    );
+
+    return {
+      systemTicks,
+      processes: Object.fromEntries(
+        processEntries.filter(
+          (entry): entry is NonNullable<typeof entry> => entry !== undefined,
+        ),
+      ),
+    };
+  } catch {
+    return undefined;
+  }
+};
+
+const readRedisResourceMetrics = async (redis: RedisClientType) => {
+  const [statsInfo, memoryInfo] = await Promise.all([
+    redis.info("stats"),
+    redis.info("memory"),
+  ]);
+  const readField = (info: string, field: string) =>
+    Number(info.match(new RegExp(`^${field}:(\\d+)`, "m"))?.[1] ?? 0);
+  return {
+    totalCommandsProcessed: readField(statsInfo, "total_commands_processed"),
+    instantaneousOpsPerSecond: readField(statsInfo, "instantaneous_ops_per_sec"),
+    usedMemoryBytes: readField(memoryInfo, "used_memory"),
+    peakMemoryBytes: readField(memoryInfo, "used_memory_peak"),
+  };
+};
+
+const readRuntimePerformanceSamples = (backends: ManagedProcess[]) =>
+  backends.flatMap((backend) =>
+    backend.logs
+      .split("\n")
+      .flatMap((line) => {
+        const jsonStart = line.indexOf('{"type":"runtime-performance-sample"');
+        if (jsonStart < 0) return [];
+        try {
+          return [JSON.parse(line.slice(jsonStart)) as Record<string, unknown>];
+        } catch {
+          return [];
+        }
+      })
+      .slice(-5),
+  );
+
+const readMongoResourceMetrics = async (prisma: PrismaClient) => {
+  const raw = (await prisma.$runCommandRaw({ serverStatus: 1 })) as Record<
+    string,
+    unknown
+  >;
+  const readNumber = (record: unknown, field: string) => {
+    if (typeof record !== "object" || record === null || !(field in record)) {
+      return 0;
+    }
+    const value = (record as Record<string, unknown>)[field];
+    return typeof value === "number" ? value : 0;
+  };
+  const operationCounts = raw.opcounters;
+
+  return {
+    residentMemoryMb: readNumber(raw.mem, "resident"),
+    currentConnections: readNumber(raw.connections, "current"),
+    networkBytesIn: readNumber(raw.network, "bytesIn"),
+    networkBytesOut: readNumber(raw.network, "bytesOut"),
+    operationCount:
+      typeof operationCounts === "object" && operationCounts !== null
+        ? Object.values(operationCounts).reduce(
+            (total, count) => total + (typeof count === "number" ? count : 0),
+            0,
+          )
+        : 0,
+  };
+};
+
+const collectDockerResourceSnapshot = async () => {
+  try {
+    const output = await runCommand(
+      "docker",
+      [
+        "stats",
+        "--no-stream",
+        "--format",
+        "{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}",
+        "english-learning-product-test-mongo-1",
+        "english-learning-product-test-redis-1",
+        "english-learning-product-test-elasticsearch-1",
+        "english-learning-product-test-nginx-1",
+      ],
+      { timeoutMs: 15_000 },
+    );
+    return output.trim().split("\n").filter(Boolean);
+  } catch (error) {
+    return [`unavailable: ${String(error)}`];
+  }
+};
+
+const collectProductNginxErrors = async () => {
+  try {
+    const output = await runCommand(
+      "docker",
+      [
+        "compose",
+        "-p",
+        COMPOSE_PROJECT,
+        "-f",
+        COMPOSE_FILE,
+        "--profile",
+        "proxy",
+        "logs",
+        "--no-color",
+        "--tail=200",
+        "nginx",
+      ],
+      { cwd: BACKEND_DIRECTORY, allowFailure: true, timeoutMs: 15_000 },
+    );
+    return output
+      .split("\n")
+      .filter((line) => /\b(error|warn|crit|alert|emerg)\b/i.test(line))
+      .slice(-40);
+  } catch (error) {
+    return [`unavailable: ${String(error)}`];
+  }
+};
+
 class ProductStack {
   readonly nestBackends: ManagedProcess[] = [];
   private worker: ManagedProcess | null = null;
@@ -432,8 +698,10 @@ class ProductStack {
       CORS_ALLOWED_ORIGINS: FRONTEND_URL,
       FRONTEND_URL,
       TRUST_PROXY: "1",
-      RATE_LIMIT_MAX_REQUESTS: "100000",
-      RATE_LIMIT_BUCKET_CAPACITY: "100000",
+      // The isolated product benchmark must allow 5k req/s for one shared
+      // authenticated identity without the application limiter masking load.
+      RATE_LIMIT_MAX_REQUESTS: "1000000",
+      RATE_LIMIT_BUCKET_CAPACITY: "1000000",
       RATE_LIMIT_WINDOW_MS: "60000",
       AUTH_RATE_LIMIT_MAX_REQUESTS: "1000",
       AUTH_RATE_LIMIT_WINDOW_MS: "60000",
@@ -1231,28 +1499,83 @@ test(
       await suite.test(
         "balances requests over both Node instances",
         async () => {
-          const responses = await Promise.all(
-            Array.from({ length: 40 }, () =>
-              jsonRequest(NGINX_URL, "/api/v1/sets", {
-                token: tokensA.accessToken,
-              }),
-            ),
-          );
-          assert.ok(
-            responses.every(({ response }) => response.status === 200),
-            JSON.stringify(
-              responses.map(({ response, body }) => ({
-                status: response.status,
-                body,
-                upstream: response.headers.get("x-test-upstream"),
+          const deadline = Date.now() + 5_000;
+          let responses: JsonResponse[];
+          let upstreams: string[];
+          let observedBothBackends: boolean;
+          do {
+            responses = await Promise.all(
+              Array.from({ length: 40 }, () =>
+                jsonRequest(NGINX_URL, "/api/v1/sets", {
+                  token: tokensA.accessToken,
+                }),
+              ),
+            );
+            assert.ok(
+              responses.every(({ response }) => response.status === 200),
+              JSON.stringify(
+                responses.map(({ response, body }) => ({
+                  status: response.status,
+                  body,
+                  upstream: response.headers.get("x-test-upstream"),
+                })),
+              ),
+            );
+            upstreams = responses.map(
+              ({ response }) => response.headers.get("x-test-upstream") ?? "",
+            );
+            observedBothBackends =
+              upstreams.some((value) => value.includes(":3401")) &&
+              upstreams.some((value) => value.includes(":3402"));
+            if (!observedBothBackends) await wait(250);
+          } while (!observedBothBackends && Date.now() < deadline);
+
+          let nginxDiagnostics = "";
+          if (!observedBothBackends) {
+            const compose = [
+              "compose",
+              "-p",
+              COMPOSE_PROJECT,
+              "-f",
+              COMPOSE_FILE,
+              "--profile",
+              "proxy",
+            ];
+            const [logs, config] = await Promise.all([
+              runCommand(
+                "docker",
+                [...compose, "logs", "--no-color", "--tail", "100", "nginx"],
+                { cwd: BACKEND_DIRECTORY, allowFailure: true, timeoutMs: 10_000 },
+              ),
+              runCommand(
+                "docker",
+                [...compose, "exec", "-T", "nginx", "nginx", "-T"],
+                { cwd: BACKEND_DIRECTORY, allowFailure: true, timeoutMs: 10_000 },
+              ),
+            ]);
+            nginxDiagnostics = JSON.stringify({
+              upstreams: [...new Set(upstreams)],
+              errors: logs
+                .split("\n")
+                .filter((line) =>
+                  /error|warn|temporarily disabled|connect\(\) failed/i.test(
+                    line,
+                  ),
+                )
+                .slice(-30),
+              upstreamConfig:
+                config.match(/upstream product_backend \{[\s\S]*?\}/)?.[0] ??
+                "upstream block not found",
+              backends: stack.nestBackends.map((backend) => ({
+                name: backend.name,
+                running: backend.running,
               })),
-            ),
+            });
+          }
+          assert.ok(
+            observedBothBackends,
+            nginxDiagnostics,
           );
-          const upstreams = responses.map(
-            ({ response }) => response.headers.get("x-test-upstream") ?? "",
-          );
-          assert.ok(upstreams.some((value) => value.includes(":3401")));
-          assert.ok(upstreams.some((value) => value.includes(":3402")));
         },
       );
 
@@ -1286,6 +1609,312 @@ test(
           );
           assert.ok(metrics.requestsPerSecond >= minimumRps);
           assert.ok(metrics.p99Ms <= maximumP99Ms);
+        },
+      );
+
+      await suite.test(
+        "soaks a paced mixed HTTP workload and reports latency, errors, and resource metrics",
+        async (t) => {
+          const durationMs = positiveIntegerFromEnv(
+            process.env.PRODUCT_SOAK_DURATION_MS,
+            60_000,
+          );
+          const targetRps = positiveIntegerFromEnv(
+            process.env.PRODUCT_SOAK_TARGET_RPS,
+            800,
+          );
+          const concurrency = positiveIntegerFromEnv(
+            process.env.PRODUCT_SOAK_CONCURRENCY,
+            50,
+          );
+          const userVersionKey = `cache:version:sets:user:${userA.id}`;
+          const processIds = stack.nestBackends
+            .map((backend) => backend.child.pid)
+            .filter((pid): pid is number => pid !== undefined);
+          const [processBefore, redisBefore, mongoBefore] = await Promise.all([
+            readLinuxProcessSnapshot(processIds),
+            readRedisResourceMetrics(stack.redis!),
+            readMongoResourceMetrics(stack.prisma!),
+          ]);
+          const dockerDuringSoak = wait(Math.floor(durationMs / 2)).then(
+            collectDockerResourceSnapshot,
+          );
+
+          const metrics = await runPacedHttpLoad(
+            durationMs,
+            targetRps,
+            concurrency,
+            async (index) => {
+              // Force a small, regular share of the authenticated sets reads
+              // through a version bump so the workload includes cache misses.
+              if (index % 100 === 0) {
+                await stack.redis!.incr(userVersionKey);
+                await stack.redis!.publish(
+                  "cache:l1:invalidate:v1",
+                  JSON.stringify({
+                    source: "product-soak",
+                    type: "key",
+                    value: userVersionKey,
+                  }),
+                );
+              }
+
+              const slot = index % 10;
+              const path =
+                slot < 7
+                  ? "/api/v1/sets"
+                  : slot < 9
+                    ? "/api/v1/posts"
+                    : `/api/v1/users/${userA.id}`;
+              const result = await jsonRequest(NGINX_URL, path, {
+                token: tokensA.accessToken,
+              });
+              return result.response.status;
+            },
+          );
+
+          const [processAfter, redisAfter, mongoAfter, dockerStats] =
+            await Promise.all([
+              readLinuxProcessSnapshot(processIds),
+              readRedisResourceMetrics(stack.redis!),
+              readMongoResourceMetrics(stack.prisma!),
+              dockerDuringSoak,
+            ]);
+          const systemTickDelta =
+            processBefore && processAfter
+              ? Math.max(1, processAfter.systemTicks - processBefore.systemTicks)
+              : 0;
+          const nestProcessMetrics = processBefore && processAfter
+            ? processIds.map((pid) => {
+                const before = processBefore.processes[pid];
+                const after = processAfter.processes[pid];
+                if (!before || !after) return { pid, available: false };
+                return {
+                  pid,
+                  cpuPercentOfOneCore: Number(
+                    (
+                      ((after.processTicks - before.processTicks) /
+                        systemTickDelta) *
+                      cpus().length *
+                      100
+                    ).toFixed(2),
+                  ),
+                  rssMb: Number((after.rssKb / 1_024).toFixed(1)),
+                };
+              })
+            : "unavailable outside Linux /proc";
+          const unexpectedResponses = Object.fromEntries(
+            Object.entries(metrics.responses).filter(
+              ([status]) => status !== "200",
+            ),
+          );
+
+          t.diagnostic(
+            JSON.stringify({
+              workload: "NGINX_MIXED_HTTP_SOAK",
+              ...metrics,
+              endpoints: {
+                "GET /api/v1/sets": "70% (with periodic cache misses)",
+                "GET /api/v1/posts": "20%",
+                "GET /api/v1/users/:id": "10%",
+              },
+              resources: {
+                nestProcesses: nestProcessMetrics,
+                runtimePerformanceSamples: readRuntimePerformanceSamples(
+                  stack.nestBackends,
+                ),
+                redis: {
+                  ...redisAfter,
+                  commandsDuringSoak:
+                    redisAfter.totalCommandsProcessed -
+                    redisBefore.totalCommandsProcessed,
+                },
+                mongo: {
+                  ...mongoAfter,
+                  operationsDuringSoak:
+                    mongoAfter.operationCount - mongoBefore.operationCount,
+                  networkBytesInDuringSoak:
+                    mongoAfter.networkBytesIn - mongoBefore.networkBytesIn,
+                  networkBytesOutDuringSoak:
+                    mongoAfter.networkBytesOut - mongoBefore.networkBytesOut,
+                },
+                dockerDuringSoak: dockerStats,
+              },
+            }),
+          );
+
+          assert.ok(
+            metrics.requestsPerSecond >= targetRps * 0.95,
+            `actual RPS ${metrics.requestsPerSecond} was below paced target ${targetRps}`,
+          );
+          assert.ok(
+            metrics.errorRate <= 0.001,
+            `error rate ${metrics.errorRate}; non-200 responses: ${JSON.stringify(unexpectedResponses)}`,
+          );
+          assert.ok(metrics.p99Ms <= 2_000, `p99=${metrics.p99Ms}ms`);
+        },
+      );
+
+      await suite.test(
+        "sustains a mixed HTTP workload up to 5,000 req/s",
+        async (t) => {
+          const durationMs = positiveIntegerFromEnv(
+            process.env.PRODUCT_MAX_RPS_DURATION_MS,
+            30_000,
+          );
+          const targetRps = positiveIntegerFromEnv(
+            process.env.PRODUCT_MAX_RPS_TARGET,
+            5_000,
+          );
+          const maxInFlight = positiveIntegerFromEnv(
+            process.env.PRODUCT_MAX_RPS_MAX_IN_FLIGHT,
+            8_000,
+          );
+          assert.ok(
+            targetRps <= 5_000,
+            `PRODUCT_MAX_RPS_TARGET must be at most 5000, received ${targetRps}`,
+          );
+          assert.ok(
+            maxInFlight <= 8_000,
+            `PRODUCT_MAX_RPS_MAX_IN_FLIGHT must be at most 8000, received ${maxInFlight}`,
+          );
+
+          const processIds = stack.nestBackends
+            .map((backend) => backend.child.pid)
+            .filter((pid): pid is number => pid !== undefined);
+          const [processBefore, redisBefore, mongoBefore] = await Promise.all([
+            readLinuxProcessSnapshot(processIds),
+            readRedisResourceMetrics(stack.redis!),
+            readMongoResourceMetrics(stack.prisma!),
+          ]);
+          const metrics = await runOpenLoopHttpLoad(
+            durationMs,
+            targetRps,
+            maxInFlight,
+            tokensA.accessToken,
+            userA.id,
+          );
+
+          const [
+            processAfter,
+            redisAfter,
+            mongoAfter,
+            dockerStats,
+            nginxErrors,
+          ] =
+            await Promise.all([
+              readLinuxProcessSnapshot(processIds),
+              readRedisResourceMetrics(stack.redis!),
+              readMongoResourceMetrics(stack.prisma!),
+              collectDockerResourceSnapshot(),
+              metrics.errorRate > 0 ? collectProductNginxErrors() : [],
+            ]);
+          const systemTickDelta =
+            processBefore && processAfter
+              ? Math.max(1, processAfter.systemTicks - processBefore.systemTicks)
+              : 0;
+          const nestProcessMetrics = processBefore && processAfter
+            ? processIds.map((pid) => {
+                const before = processBefore.processes[pid];
+                const after = processAfter.processes[pid];
+                if (!before || !after) return { pid, available: false };
+                return {
+                  pid,
+                  cpuPercentOfOneCore: Number(
+                    (
+                      ((after.processTicks - before.processTicks) /
+                        systemTickDelta) *
+                      cpus().length *
+                      100
+                    ).toFixed(2),
+                  ),
+                  rssMb: Number((after.rssKb / 1_024).toFixed(1)),
+                };
+              })
+            : "unavailable outside Linux /proc";
+          const unexpectedResponses = Object.fromEntries(
+            Object.entries(metrics.responses).filter(
+              ([status]) => status !== "200",
+            ),
+          );
+
+          t.diagnostic(
+            JSON.stringify({
+              workload: "NGINX_MIXED_HTTP_MAX_5000_RPS",
+              ...metrics,
+              failedResponseSamples: metrics.failedResponseSamples,
+              nginxErrors,
+              endpoints: {
+                "GET /api/v1/sets": "70% (warm cache)",
+                "GET /api/v1/posts": "20%",
+                "GET /api/v1/users/:id": "10%",
+              },
+              resources: {
+                nestProcesses: nestProcessMetrics,
+                runtimePerformanceSamples: readRuntimePerformanceSamples(
+                  stack.nestBackends,
+                ),
+                redis: {
+                  ...redisAfter,
+                  commandsDuringLoad:
+                    redisAfter.totalCommandsProcessed -
+                    redisBefore.totalCommandsProcessed,
+                },
+                mongo: {
+                  ...mongoAfter,
+                  operationsDuringLoad:
+                    mongoAfter.operationCount - mongoBefore.operationCount,
+                  networkBytesInDuringLoad:
+                    mongoAfter.networkBytesIn - mongoBefore.networkBytesIn,
+                  networkBytesOutDuringLoad:
+                    mongoAfter.networkBytesOut - mongoBefore.networkBytesOut,
+                },
+                docker: dockerStats,
+              },
+            }),
+          );
+
+          // High concurrency can trip Nginx's passive upstream health checks.
+          // Reset only the isolated test proxy so later contract tests start
+          // from a clean edge state, even when this performance assertion fails.
+          try {
+            await Promise.all(
+              stack.nestBackends.map((backend, index) =>
+                waitForHttp(
+                  `${index === 0 ? NEST_NODE_1_URL : NEST_NODE_2_URL}/api/v1/health`,
+                  10_000,
+                  backend,
+                ),
+              ),
+            );
+          } finally {
+            await runCommand(
+              "docker",
+              [
+                "compose",
+                "-p",
+                COMPOSE_PROJECT,
+                "-f",
+                COMPOSE_FILE,
+                "--profile",
+                "proxy",
+                "restart",
+                "nginx",
+              ],
+              { cwd: BACKEND_DIRECTORY, timeoutMs: 30_000 },
+            );
+            await waitForHttp(`${NGINX_URL}/api/v1/health`, 30_000);
+          }
+
+          assert.ok(
+            metrics.successfulRequestsPerSecondDuringWindow >= targetRps * 0.95,
+            `successful RPS during load window ${metrics.successfulRequestsPerSecondDuringWindow} was below 95% of target ${targetRps}`,
+          );
+          assert.ok(
+            metrics.errorRate <= 0.001,
+            `error rate ${metrics.errorRate}; non-200 responses: ${JSON.stringify(unexpectedResponses)}`,
+          );
+          assert.ok(metrics.p99Ms <= 2_000, `p99=${metrics.p99Ms}ms`);
         },
       );
 

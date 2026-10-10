@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createNestTestContext } from "../helpers/nest-test-context";
 
 type SetOptions = {
   NX?: boolean;
@@ -151,19 +152,76 @@ test("auth, cache, and study-session integration", async (suite) => {
   process.env.JWT_EXPIRE = "15m";
   process.env.JWT_REFRESH_EXPIRE = "7d";
 
-  const { redisClient, pubSubRedis } = await import("../../src/utils/redis");
   const redis = new InMemoryRedis();
-  redisClient.client = redis as never;
-  pubSubRedis.pubClient = redis as never;
-  pubSubRedis.subClient = redis as never;
-
   const { prisma } = await import("../../src/libs/prisma");
   const { hashPassword } = await import("../../src/utils/hash");
-  const { apiAuthService } = await import("../../src/services/apiAuth.service");
-  const { postsService } = await import("../../src/services/posts.service");
-  const { StudyService } = await import("../../src/services/study.service");
+  const { ApiAuthService } = await import(
+    "../../src/modules/auth/api-auth.service"
+  );
+  const { PostsService } = await import("../../src/modules/posts/posts.service");
+  const { UserRepository } = await import(
+    "../../src/modules/users/users.repository"
+  );
+  const { PostRepository } = await import("../../src/modules/posts/posts.repository");
+  const { StudyService } = await import("../../src/modules/study/study.service");
+  const { StudyRepository } = await import(
+    "../../src/modules/study/study.repository"
+  );
+  const { UserProgressRepository } = await import(
+    "../../src/modules/study/user-progress.repository"
+  );
+  const { CacheService } = await import("../../src/services/cache.service");
+  const { AccessTokenService } = await import(
+    "../../src/common/services/access-token.service"
+  );
+  const {
+    CACHE_SERVICE,
+    ELASTICSEARCH_SERVICE,
+    PRISMA_CLIENT,
+    PUBSUB_REDIS_CLIENT,
+    REDIS_CLIENT,
+  } = await import("../../src/infrastructure/infrastructure.tokens");
+  const { MAIL_SERVICE, API_AUTH_SERVICE } = await import(
+    "../../src/modules/auth/auth.tokens"
+  );
+  const { USER_REPOSITORY } = await import("../../src/modules/users/users.tokens");
+  const { POSTS_REPOSITORY } = await import("../../src/modules/posts/posts.tokens");
+  const {
+    DECK_SYNC_ENQUEUE,
+    STUDY_REPOSITORY,
+    USER_PROGRESS_REPOSITORY,
+  } = await import("../../src/modules/study/study.tokens");
   const { getStudySessionDocumentId } =
-    await import("../../src/repositories/user-progress.repository");
+    await import("../../src/modules/study/user-progress.repository");
+  const applicationContext = await createNestTestContext([
+    { provide: PRISMA_CLIENT, useValue: prisma },
+    { provide: REDIS_CLIENT, useValue: redis },
+    { provide: PUBSUB_REDIS_CLIENT, useValue: redis },
+    { provide: ELASTICSEARCH_SERVICE, useValue: {} },
+    { provide: DECK_SYNC_ENQUEUE, useValue: async () => undefined },
+    UserRepository,
+    { provide: USER_REPOSITORY, useExisting: UserRepository },
+    PostRepository,
+    { provide: POSTS_REPOSITORY, useExisting: PostRepository },
+    StudyRepository,
+    { provide: STUDY_REPOSITORY, useExisting: StudyRepository },
+    UserProgressRepository,
+    { provide: USER_PROGRESS_REPOSITORY, useExisting: UserProgressRepository },
+    CacheService,
+    { provide: CACHE_SERVICE, useExisting: CacheService },
+    AccessTokenService,
+    {
+      provide: MAIL_SERVICE,
+      useValue: { sendMail: async () => undefined, sendWithTemplate: async () => undefined },
+    },
+    ApiAuthService,
+    { provide: API_AUTH_SERVICE, useExisting: ApiAuthService },
+    PostsService,
+    StudyService,
+  ]);
+  suite.after(async () => applicationContext.close());
+  const apiAuthService = applicationContext.get(ApiAuthService);
+  const postsService = applicationContext.get(PostsService);
 
   await suite.test(
     "auth rotates a refresh token only once and authenticates its access token",
@@ -322,7 +380,7 @@ test("auth, cache, and study-session integration", async (suite) => {
       });
       redis.values.set(sessionKey, serializedSession);
 
-      const service = new StudyService();
+      const service = applicationContext.get(StudyService);
       const first = await service.syncProgress(userId, clientSessionId);
 
       // Simulate a process crash after MongoDB commit but before Redis cleanup.

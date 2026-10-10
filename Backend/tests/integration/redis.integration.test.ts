@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { startRedisTestServer } from "../helpers/redis-test-server";
+import { createNestTestContext } from "../helpers/nest-test-context";
 
 const wait = (milliseconds: number) =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -12,13 +13,39 @@ test("Redis-backed application behavior", async (suite) => {
   process.env.REDIS_CONNECT_TIMEOUT_MS = "2000";
   process.env.RATE_LIMIT_REDIS_TIMEOUT_MS = "2000";
 
-  const { closeRedisConnections, redisClient } =
+  const { closeRedisConnections, redisClient, pubSubRedis } =
     await import("../../src/utils/redis");
-  const { cacheService } = await import("../../src/services/cache.service");
-  const { consumeRateLimitToken } =
-    await import("../../src/services/rateLimit.service");
-  const { StudyService } = await import("../../src/services/study.service");
+  const { CacheService } = await import("../../src/services/cache.service");
+  const { RateLimitService } = await import("../../src/services/rateLimit.service");
+  const { StudyService } = await import("../../src/modules/study/study.service");
   const redis = redisClient.getInstance();
+  const pubSub = pubSubRedis.getInstance();
+  const {
+    CACHE_SERVICE,
+    ELASTICSEARCH_SERVICE,
+    PUBSUB_REDIS_CLIENT,
+    REDIS_CLIENT,
+  } = await import("../../src/infrastructure/infrastructure.tokens");
+  const {
+    DECK_SYNC_ENQUEUE,
+    STUDY_REPOSITORY,
+    USER_PROGRESS_REPOSITORY,
+  } = await import("../../src/modules/study/study.tokens");
+  const applicationContext = await createNestTestContext([
+    { provide: REDIS_CLIENT, useValue: redis },
+    { provide: PUBSUB_REDIS_CLIENT, useValue: pubSub },
+    { provide: ELASTICSEARCH_SERVICE, useValue: {} },
+    { provide: DECK_SYNC_ENQUEUE, useValue: async () => undefined },
+    { provide: STUDY_REPOSITORY, useValue: {} },
+    { provide: USER_PROGRESS_REPOSITORY, useValue: {} },
+    CacheService,
+    { provide: CACHE_SERVICE, useExisting: CacheService },
+    RateLimitService,
+    StudyService,
+  ]);
+  const cacheService = applicationContext.get(CacheService);
+  const rateLimits = applicationContext.get(RateLimitService);
+  const studyService = applicationContext.get(StudyService);
 
   try {
     assert.equal(await redis.ping(), "PONG");
@@ -84,7 +111,6 @@ test("Redis-backed application behavior", async (suite) => {
     await suite.test(
       "study-session Lua updates remain atomic across concurrent submissions",
       async () => {
-        const service = new StudyService();
         const userId = "64b000000000000000000011";
         const setId = "64b000000000000000000012";
         const sessionId = `lua-session-${Date.now()}`;
@@ -95,7 +121,7 @@ test("Redis-backed application behavior", async (suite) => {
 
         await Promise.all(
           answers.map(({ cardId, isCorrect }) =>
-            service.submitAnswer({
+            studyService.submitAnswer({
               userId,
               sessionId,
               setId,
@@ -150,7 +176,7 @@ test("Redis-backed application behavior", async (suite) => {
         };
         const results = await Promise.all(
           Array.from({ length: 500 }, () =>
-            consumeRateLimitToken("same-client", policy),
+            rateLimits.consumeToken("same-client", policy),
           ),
         );
 
@@ -174,7 +200,7 @@ test("Redis-backed application behavior", async (suite) => {
       "rate limiter reloads its Lua script after SCRIPT FLUSH",
       async () => {
         await redis.scriptFlush();
-        const result = await consumeRateLimitToken("after-script-flush", {
+        const result = await rateLimits.consumeToken("after-script-flush", {
           namespace: `noscript-${Date.now()}`,
           bucketCapacity: 2,
           refillPerMs: 0.001,
@@ -193,7 +219,7 @@ test("Redis-backed application behavior", async (suite) => {
         // blacklist EXISTS remains safe to repeat while EVALSHA did not run.
         await redis.scriptFlush();
 
-        const result = await consumeRateLimitToken(
+        const result = await rateLimits.consumeToken(
           "pipeline-client",
           {
             namespace: `pipeline-${Date.now()}`,
@@ -209,6 +235,7 @@ test("Redis-backed application behavior", async (suite) => {
       },
     );
   } finally {
+    await applicationContext.close();
     await closeRedisConnections();
     await server.stop();
     delete process.env.REDIS_URL;

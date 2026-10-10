@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   generateQuizSchema,
   listSetsSchema,
-} from "../src/validators/study.validator";
+} from "../src/modules/study/study.validator";
 
 const validSetId = "64b000000000000000000001";
 
