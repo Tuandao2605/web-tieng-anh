@@ -1,20 +1,15 @@
 import {
   CanActivate,
   ExecutionContext,
+  Inject,
   Injectable,
 } from "@nestjs/common";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { AuthenticatedUser, RequestAuthContext } from "../../types/auth";
-import { apiAuthService } from "../../services/apiAuth.service";
-import {
-  consumeHeavyRateLimitToken,
-  consumeRateLimitToken,
-  consumeSensitiveAuthRateLimitToken,
-} from "../../services/rateLimit.service";
-import {
-  extractBearerToken,
-  verifyAccessTokenCached,
-} from "../../services/accessToken.service";
+import type { ApiAuthService } from "../../modules/auth/api-auth.service";
+import { API_AUTH_SERVICE } from "../../modules/auth/auth.tokens";
+import { RateLimitService } from "../../services/rateLimit.service";
+import { AccessTokenService } from "../services/access-token.service";
 import { apiHttpException } from "../exceptions/api-http-exception";
 
 type AuthenticatedFastifyRequest = FastifyRequest & {
@@ -26,10 +21,13 @@ type AuthenticatedFastifyRequest = FastifyRequest & {
 const getRequest = (context: ExecutionContext) =>
   context.switchToHttp().getRequest<AuthenticatedFastifyRequest>();
 
-const getAccessToken = (request: FastifyRequest) => {
+const getAccessToken = (
+  request: FastifyRequest,
+  accessTokens: AccessTokenService,
+) => {
   const authorization = request.headers.authorization;
   return typeof authorization === "string"
-    ? extractBearerToken(authorization)
+    ? accessTokens.extractBearer(authorization)
     : null;
 };
 
@@ -43,10 +41,15 @@ const logRateLimitFailure = (name: string, error: unknown) => {
 
 @Injectable()
 export class ApiRateLimitGuard implements CanActivate {
+  constructor(
+    private readonly rateLimits: RateLimitService,
+    private readonly accessTokens: AccessTokenService,
+  ) {}
+
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = getRequest(context);
-    const token = getAccessToken(request);
-    const principal = token ? verifyAccessTokenCached(token) : null;
+    const token = getAccessToken(request, this.accessTokens);
+    const principal = token ? this.accessTokens.verifyCached(token) : null;
     const authContext: RequestAuthContext = {
       token,
       principal,
@@ -67,7 +70,11 @@ export class ApiRateLimitGuard implements CanActivate {
     try {
       // Redis owns the atomic bucket and
       // checks blacklist in the same pipeline when a valid token is present.
-      result = await consumeRateLimitToken(identity, undefined, principal?.jti);
+      result = await this.rateLimits.consumeToken(
+        identity,
+        undefined,
+        principal?.jti,
+      );
     } catch (error) {
       logRateLimitFailure("Global rate limiter", error);
       return true;
@@ -107,6 +114,8 @@ export class ApiRateLimitGuard implements CanActivate {
 
 @Injectable()
 export class SensitiveAuthRateLimitGuard implements CanActivate {
+  constructor(private readonly rateLimits: RateLimitService) {}
+
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<FastifyRequest>();
     const clientIp = request.ip ?? request.socket.remoteAddress;
@@ -120,7 +129,7 @@ export class SensitiveAuthRateLimitGuard implements CanActivate {
 
     let result;
     try {
-      result = await consumeSensitiveAuthRateLimitToken(`ip:${clientIp}`);
+      result = await this.rateLimits.consumeSensitiveToken(`ip:${clientIp}`);
     } catch (error) {
       logRateLimitFailure("Sensitive auth rate limiter", error);
       throw apiHttpException(
@@ -155,6 +164,8 @@ export class SensitiveAuthRateLimitGuard implements CanActivate {
 
 @Injectable()
 export class HeavyRateLimitGuard implements CanActivate {
+  constructor(private readonly rateLimits: RateLimitService) {}
+
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = getRequest(context);
     const principal = request.authContext?.principal;
@@ -172,7 +183,7 @@ export class HeavyRateLimitGuard implements CanActivate {
 
     let result;
     try {
-      result = await consumeHeavyRateLimitToken(rateLimitIdentity);
+      result = await this.rateLimits.consumeHeavyToken(rateLimitIdentity);
     } catch (error) {
       logRateLimitFailure("Heavy rate limiter", error);
       return true;
@@ -203,6 +214,11 @@ export class HeavyRateLimitGuard implements CanActivate {
 
 @Injectable()
 export class OptionalJwtAuthGuard implements CanActivate {
+  constructor(
+    @Inject(API_AUTH_SERVICE) private readonly apiAuth: ApiAuthService,
+    private readonly accessTokens: AccessTokenService,
+  ) {}
+
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = getRequest(context);
     const authContext = request.authContext;
@@ -217,8 +233,9 @@ export class OptionalJwtAuthGuard implements CanActivate {
 
     // Keep this fallback if the global limiter failed open before it could
     // confirm the token's blacklist status.
-    const token = authContext?.token ?? getAccessToken(request);
-    const user = token ? await apiAuthService.getProfile(token) : false;
+    const token =
+      authContext?.token ?? getAccessToken(request, this.accessTokens);
+    const user = token ? await this.apiAuth.getProfile(token) : false;
     if (user) {
       request.user = user;
       request.token = token ?? undefined;
@@ -233,6 +250,11 @@ export class OptionalJwtAuthGuard implements CanActivate {
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
+  constructor(
+    @Inject(API_AUTH_SERVICE) private readonly apiAuth: ApiAuthService,
+    private readonly accessTokens: AccessTokenService,
+  ) {}
+
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = getRequest(context);
     const authContext = request.authContext;
@@ -244,27 +266,20 @@ export class JwtAuthGuard implements CanActivate {
         return true;
       }
 
-      throw apiHttpException(
-        "Invalid credentials or missing token",
-        {},
-        401,
-      );
+      throw apiHttpException("Invalid credentials or missing token", {}, 401);
     }
 
     // Preserve authMiddleware's fallback when Redis could not answer the
     // combined rate-limit/blacklist pipeline.
-    const token = authContext?.token ?? getAccessToken(request);
-    const user = token ? await apiAuthService.getProfile(token) : false;
+    const token =
+      authContext?.token ?? getAccessToken(request, this.accessTokens);
+    const user = token ? await this.apiAuth.getProfile(token) : false;
     if (!user) {
       if (authContext) {
         authContext.blacklistChecked = true;
         authContext.revoked = authContext.principal !== null;
       }
-      throw apiHttpException(
-        "Invalid credentials or missing token",
-        {},
-        401,
-      );
+      throw apiHttpException("Invalid credentials or missing token", {}, 401);
     }
 
     request.user = user;

@@ -1,5 +1,8 @@
-import { redisClient } from "../utils/redis";
-const redis = redisClient.getInstance();
+import { Inject, Injectable } from "@nestjs/common";
+import {
+  REDIS_CLIENT,
+  type RedisProvider,
+} from "../infrastructure/infrastructure.tokens";
 
 const positiveNumberFromEnv = (value: string | undefined, fallback: number) => {
   const parsed = Number(value);
@@ -51,7 +54,7 @@ type RateLimitOptions = {
   refillPerSecond?: number;
 };
 
-type RateLimitPolicy = {
+export type RateLimitPolicy = {
   namespace: string;
   bucketCapacity: number;
   refillPerMs: number;
@@ -101,7 +104,7 @@ let tokenBucketSha: string | null = null;
 let tokenBucketLoadPromise: Promise<string> | null = null;
 let tokenBucketGeneration = 0;
 
-const loadTokenBucketScript = () => {
+const loadTokenBucketScript = (redis: RedisProvider) => {
   if (tokenBucketSha) return Promise.resolve(tokenBucketSha);
   if (!tokenBucketLoadPromise) {
     tokenBucketLoadPromise = redis
@@ -121,6 +124,7 @@ const isNoScriptError = (error: unknown) =>
   error instanceof Error && error.message.includes("NOSCRIPT");
 
 const executeTokenBucketPipeline = async (
+  redis: RedisProvider,
   sha: string,
   key: string,
   arguments_: string[],
@@ -162,15 +166,17 @@ const executeTokenBucketPipeline = async (
 };
 
 const evaluateTokenBucket = async (
+  redis: RedisProvider,
   key: string,
   arguments_: string[],
   blacklistJti?: string,
 ) => {
-  let sha = await loadTokenBucketScript();
+  let sha = await loadTokenBucketScript(redis);
   const evaluatedGeneration = tokenBucketGeneration;
 
   try {
     return await executeTokenBucketPipeline(
+      redis,
       sha,
       key,
       arguments_,
@@ -187,8 +193,14 @@ const evaluateTokenBucket = async (
       tokenBucketGeneration += 1;
       tokenBucketSha = null;
     }
-    sha = await loadTokenBucketScript();
-    return executeTokenBucketPipeline(sha, key, arguments_, blacklistJti);
+    sha = await loadTokenBucketScript(redis);
+    return executeTokenBucketPipeline(
+      redis,
+      sha,
+      key,
+      arguments_,
+      blacklistJti,
+    );
   }
 };
 
@@ -215,40 +227,11 @@ const GLOBAL_POLICY = createPolicy({
   refillPerSecond: REFILL_PER_SECOND,
 });
 
-export const consumeRateLimitToken = async (
-  identity: string,
-  policy: RateLimitPolicy = GLOBAL_POLICY,
-  blacklistJti?: string,
-) => {
-  const key = `rateLimit:${policy.namespace}:${identity}`;
-  const evaluation = await evaluateTokenBucket(
-    key,
-    [
-      String(policy.bucketCapacity),
-      String(policy.refillPerMs),
-      "1",
-      String(policy.idleTtlMs),
-    ],
-    blacklistJti,
-  );
-  const result = evaluation.bucket;
-
-  return {
-    allowed: result[0] === 1,
-    remaining: result[1],
-    retryAfterMs: result[2],
-    revoked: evaluation.revoked,
-  };
-};
-
 const SENSITIVE_AUTH_POLICY = createPolicy({
   namespace: "auth-sensitive",
   maxRequests: AUTH_REQUESTS_PER_WINDOW,
   windowMs: AUTH_WINDOW_MS,
 });
-
-export const consumeSensitiveAuthRateLimitToken = (identity: string) =>
-  consumeRateLimitToken(identity, SENSITIVE_AUTH_POLICY);
 
 const HEAVY_POLICY = createPolicy({
   namespace: "heavy",
@@ -256,5 +239,45 @@ const HEAVY_POLICY = createPolicy({
   windowMs: HEAVY_WINDOW_MS,
 });
 
-export const consumeHeavyRateLimitToken = (identity: string) =>
-  consumeRateLimitToken(identity, HEAVY_POLICY);
+@Injectable()
+export class RateLimitService {
+  constructor(
+    @Inject(REDIS_CLIENT)
+    private readonly redis: RedisProvider,
+  ) {}
+
+  async consumeToken(
+    identity: string,
+    policy: RateLimitPolicy = GLOBAL_POLICY,
+    blacklistJti?: string,
+  ) {
+    const key = `rateLimit:${policy.namespace}:${identity}`;
+    const evaluation = await evaluateTokenBucket(
+      this.redis,
+      key,
+      [
+        String(policy.bucketCapacity),
+        String(policy.refillPerMs),
+        "1",
+        String(policy.idleTtlMs),
+      ],
+      blacklistJti,
+    );
+    const result = evaluation.bucket;
+
+    return {
+      allowed: result[0] === 1,
+      remaining: result[1],
+      retryAfterMs: result[2],
+      revoked: evaluation.revoked,
+    };
+  }
+
+  consumeSensitiveToken(identity: string) {
+    return this.consumeToken(identity, SENSITIVE_AUTH_POLICY);
+  }
+
+  consumeHeavyToken(identity: string) {
+    return this.consumeToken(identity, HEAVY_POLICY);
+  }
+}

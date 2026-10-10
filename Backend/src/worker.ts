@@ -1,14 +1,13 @@
 import "dotenv/config";
+import "reflect-metadata";
+import type { INestApplicationContext } from "@nestjs/common";
 import { assertBackgroundWorkerRole } from "./utils/backgroundRuntime";
 
 type BackgroundDependencies = {
+  applicationContext: INestApplicationContext;
   scheduler: typeof import("./scheduler");
   searchIndexWorker: typeof import("./workers/search-index.worker");
   emailWorker: typeof import("./workers/email.worker");
-  searchIndexQueue: typeof import("./queues/search-index.queue");
-  bullmq: typeof import("./utils/bullmq");
-  prisma: typeof import("./libs/prisma");
-  redis: typeof import("./utils/redis");
 };
 
 let dependencies: BackgroundDependencies | null = null;
@@ -35,15 +34,10 @@ const shutdown = async (reason: string, startupFailed = false) => {
       activeDependencies.searchIndexWorker.closeSearchIndexWorker(),
       activeDependencies.emailWorker.closeEmailWorker(),
     ]);
-    const queueResults = await Promise.allSettled([
-      activeDependencies.searchIndexQueue.closeSearchIndexQueue(),
+    const applicationResults = await Promise.allSettled([
+      activeDependencies.applicationContext.close(),
     ]);
-    const resourceResults = await Promise.allSettled([
-      activeDependencies.bullmq.closeBullMqConnections(),
-      activeDependencies.prisma.prisma.$disconnect(),
-      activeDependencies.redis.closeRedisConnections(),
-    ]);
-    failures = [...workerResults, ...queueResults, ...resourceResults];
+    failures = [...workerResults, ...applicationResults];
   }
 
   clearTimeout(forceExitTimer);
@@ -66,35 +60,33 @@ const bootstrap = async () => {
     scheduler,
     searchIndexWorker,
     emailWorker,
-    searchIndexQueue,
-    bullmq,
-    prisma,
-    redis,
+    { NestFactory },
+    { InfrastructureModule },
+    { ElasticsearchService },
   ] = await Promise.all([
     import("./scheduler"),
     import("./workers/search-index.worker"),
     import("./workers/email.worker"),
-    import("./queues/search-index.queue"),
-    import("./utils/bullmq"),
-    import("./libs/prisma"),
-    import("./utils/redis"),
+    import("@nestjs/core"),
+    import("./infrastructure/infrastructure.module"),
+    import("./services/elasticsearch.service"),
   ]);
+  const applicationContext = await NestFactory.createApplicationContext(
+    InfrastructureModule,
+    { logger: false },
+  );
 
   dependencies = {
+    applicationContext,
     scheduler,
     searchIndexWorker,
     emailWorker,
-    searchIndexQueue,
-    bullmq,
-    prisma,
-    redis,
   };
 
-  // The order subscriber is also a background consumer; keep it in this sole
-  // worker runtime instead of creating one subscription per web/API process.
-  await import("./subscribers/order");
   await scheduler.startSchedulers();
-  searchIndexWorker.startSearchIndexWorker();
+  searchIndexWorker.startSearchIndexWorker(
+    applicationContext.get(ElasticsearchService),
+  );
   emailWorker.startEmailWorker();
   console.log("Background runtime started (scheduler and queue workers)");
 };

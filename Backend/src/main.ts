@@ -1,4 +1,5 @@
 import "reflect-metadata";
+import { HttpStatus } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import {
   FastifyAdapter,
@@ -9,10 +10,11 @@ import fastifyCors from "@fastify/cors";
 import fastifyHelmet from "@fastify/helmet";
 import type { FastifyServerOptions } from "fastify";
 import { runtimeConfig } from "./config/runtime";
-import { startSocketServer } from "./web-socket/socket-server";
 import { ApiEnvelopeInterceptor } from "./common/interceptors/api-envelope.interceptor";
 import { ApiExceptionFilter } from "./common/filters/api-exception.filter";
 import { AppModule } from "./app.module";
+import { REDIS_CLIENT } from "./infrastructure/infrastructure.tokens";
+import { startPerformanceDiagnostics } from "./common/performance-diagnostics";
 
 const configuredNestPort = Number(process.env.NEST_PORT);
 const nestPort =
@@ -58,7 +60,11 @@ const bootstrap = async () => {
           callback(null, true);
           return;
         }
-        callback(new Error("Origin is not allowed by CORS"), false);
+        const error = Object.assign(
+          new Error("Origin is not allowed by CORS"),
+          { status: HttpStatus.FORBIDDEN },
+        );
+        callback(error, false);
       },
       credentials: true,
       allowedHeaders: ["Authorization", "Content-Type"],
@@ -86,10 +92,25 @@ const bootstrap = async () => {
     const httpServer = app.getHttpServer();
     httpServer.keepAliveTimeout = runtimeConfig.httpKeepAliveTimeoutMs;
     httpServer.headersTimeout = runtimeConfig.httpHeadersTimeoutMs;
-    startSocketServer();
-    app.getHttpAdapter().getInstance().log.info(
-      `Nest Fastify application listening on port ${nestPort}`,
-    );
+    if (process.env.PERFORMANCE_DIAGNOSTICS === "true") {
+      const configuredDiagnosticsInterval = Number(
+        process.env.PERFORMANCE_DIAGNOSTICS_INTERVAL_MS,
+      );
+      const diagnosticsIntervalMs =
+        Number.isInteger(configuredDiagnosticsInterval) &&
+        configuredDiagnosticsInterval >= 1_000
+          ? configuredDiagnosticsInterval
+          : 10_000;
+      const stopDiagnostics = startPerformanceDiagnostics(
+        app.get(REDIS_CLIENT),
+        diagnosticsIntervalMs,
+      );
+      httpServer.once("close", stopDiagnostics);
+    }
+    app
+      .getHttpAdapter()
+      .getInstance()
+      .log.info(`Nest Fastify application listening on port ${nestPort}`);
   } catch (error) {
     await app.close().catch((closeError: unknown) => {
       console.error("Failed to close Nest after bootstrap error", closeError);

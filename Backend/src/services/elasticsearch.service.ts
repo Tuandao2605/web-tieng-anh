@@ -1,5 +1,11 @@
 import { Client } from "@elastic/elasticsearch";
-import { prisma } from "../libs/prisma";
+import { Inject, Injectable, OnApplicationShutdown } from "@nestjs/common";
+import {
+  ELASTICSEARCH_CLIENT,
+  ElasticsearchClientProvider,
+  PRISMA_CLIENT,
+  PrismaProvider,
+} from "../infrastructure/infrastructure.tokens";
 
 const INDEX_NAME =
   process.env.ELASTICSEARCH_DECK_INDEX ?? "public_flashcard_decks_v1";
@@ -32,7 +38,7 @@ if (process.env.ELASTICSEARCH_API_KEY) {
   };
 }
 
-const client = new Client(clientOptions);
+export const elasticsearchClient = new Client(clientOptions);
 let ensureIndexPromise: Promise<void> | null = null;
 
 const isVersionConflict = (error: unknown) =>
@@ -44,7 +50,7 @@ const isVersionConflict = (error: unknown) =>
   "statusCode" in error.meta &&
   error.meta.statusCode === 409;
 
-async function ensureIndex() {
+async function ensureIndex(client: ElasticsearchClientProvider) {
   if (ensureIndexPromise) return ensureIndexPromise;
   ensureIndexPromise = (async () => {
     const exists = await client.indices.exists({ index: INDEX_NAME });
@@ -108,6 +114,7 @@ async function ensureIndex() {
 }
 
 async function buildDocuments(
+  prismaClient: PrismaProvider,
   decks: Array<{
     id: string;
     userId: string;
@@ -121,7 +128,7 @@ async function buildDocuments(
   const authorIds = [...new Set(decks.map((deck) => deck.userId))];
   const authors =
     authorIds.length > 0
-      ? await prisma.user.findMany({
+      ? await prismaClient.user.findMany({
           where: { id: { in: authorIds } },
           select: { id: true, name: true },
         })
@@ -141,7 +148,15 @@ async function buildDocuments(
   );
 }
 
-export const elasticsearchService = {
+@Injectable()
+export class ElasticsearchService implements OnApplicationShutdown {
+  constructor(
+    @Inject(ELASTICSEARCH_CLIENT)
+    private readonly client: ElasticsearchClientProvider,
+    @Inject(PRISMA_CLIENT)
+    private readonly prismaClient: PrismaProvider,
+  ) {}
+
   async searchPublicDecks(
     keyword: string,
     page: number,
@@ -149,9 +164,9 @@ export const elasticsearchService = {
     signal?: AbortSignal,
   ) {
     signal?.throwIfAborted();
-    await ensureIndex();
+    await ensureIndex(this.client);
     signal?.throwIfAborted();
-    const response = await client.search<PublicDeckDocument>(
+    const response = await this.client.search<PublicDeckDocument>(
       {
         index: INDEX_NAME,
         from: (page - 1) * limit,
@@ -177,11 +192,11 @@ export const elasticsearchService = {
       ),
       total,
     };
-  },
+  }
 
   async syncDeck(deckId: string, mutationVersion: number = Date.now()) {
-    await ensureIndex();
-    const deck = await prisma.flashcardSet.findUnique({
+    await ensureIndex(this.client);
+    const deck = await this.prismaClient.flashcardSet.findUnique({
       where: { id: deckId },
       select: {
         id: true,
@@ -194,7 +209,7 @@ export const elasticsearchService = {
       },
     });
     if (!deck?.isPublic) {
-      await client
+      await this.client
         .delete(
           {
             index: INDEX_NAME,
@@ -209,9 +224,9 @@ export const elasticsearchService = {
         });
       return;
     }
-    const [document] = await buildDocuments([deck]);
+    const [document] = await buildDocuments(this.prismaClient, [deck]);
     if (document) {
-      await client
+      await this.client
         .index({
           index: INDEX_NAME,
           id: deckId,
@@ -225,19 +240,19 @@ export const elasticsearchService = {
           if (!isVersionConflict(error)) throw error;
         });
     }
-  },
+  }
 
   async syncDecksByUser(userId: string) {
-    const decks = await prisma.flashcardSet.findMany({
+    const decks = await this.prismaClient.flashcardSet.findMany({
       where: { userId },
       select: { id: true },
     });
     await Promise.all(decks.map((deck) => this.syncDeck(deck.id)));
-  },
+  }
 
   async reindexPublicDecks() {
-    await ensureIndex();
-    await client.deleteByQuery({
+    await ensureIndex(this.client);
+    await this.client.deleteByQuery({
       index: INDEX_NAME,
       conflicts: "proceed",
       query: { match_all: {} },
@@ -247,7 +262,7 @@ export const elasticsearchService = {
     let cursor: string | undefined;
     let indexed = 0;
     do {
-      const decks = await prisma.flashcardSet.findMany({
+      const decks = await this.prismaClient.flashcardSet.findMany({
         where: { isPublic: true },
         orderBy: { id: "asc" },
         take: BATCH_SIZE,
@@ -263,18 +278,22 @@ export const elasticsearchService = {
         },
       });
       if (decks.length === 0) break;
-      const documents = await buildDocuments(decks);
+      const documents = await buildDocuments(this.prismaClient, decks);
       const operations = documents.flatMap((document) => [
         { index: { _index: INDEX_NAME, _id: document.id } },
         document,
       ]);
-      const response = await client.bulk({ operations, refresh: false });
+      const response = await this.client.bulk({ operations, refresh: false });
       if (response.errors)
         throw new Error("Elasticsearch bulk reindex contained failed items");
       indexed += documents.length;
       cursor = decks[decks.length - 1]?.id;
     } while (cursor);
-    await client.indices.refresh({ index: INDEX_NAME });
+    await this.client.indices.refresh({ index: INDEX_NAME });
     return indexed;
-  },
-};
+  }
+
+  async onApplicationShutdown() {
+    await this.client.close();
+  }
+}

@@ -1,7 +1,24 @@
 import { randomUUID } from "node:crypto";
-import { pubSubRedis, redisClient } from "../utils/redis";
+import { Inject, Injectable, OnModuleInit } from "@nestjs/common";
+import {
+  PUBSUB_REDIS_CLIENT,
+  PubSubRedisProvider,
+  REDIS_CLIENT,
+  RedisProvider,
+} from "../infrastructure/infrastructure.tokens";
 
-const redis = redisClient.getInstance();
+let redis: RedisProvider | undefined;
+let pubSub: PubSubRedisProvider | undefined;
+const getRedis = () => {
+  if (!redis) throw new Error("CacheService has not been initialized by Nest");
+  return redis;
+};
+const getPubSub = () => {
+  if (!pubSub) {
+    throw new Error("CacheService has not been initialized by Nest");
+  }
+  return pubSub;
+};
 
 const positiveNumberFromEnv = (value: string | undefined, fallback: number) => {
   const parsed = Number(value);
@@ -102,6 +119,7 @@ let l1Bytes = 0;
 
 // Prevents a thundering herd inside one Node.js process.
 const inFlight = new Map<string, InFlightLoad>();
+let invalidationSubscriptionStarted = false;
 
 const tagName = (tag: string) => `tag:${tag}`;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -251,7 +269,7 @@ const removeL1ByTagPrefix = (prefix: string) => {
 const publishInvalidation = async (
   message: Omit<L1InvalidationMessage, "source">,
 ) => {
-  const publisher = pubSubRedis.getInstance().pubClient;
+  const publisher = getPubSub().pubClient;
   if (!publisher) return;
   try {
     await publisher.publish(
@@ -265,8 +283,9 @@ const publishInvalidation = async (
 };
 
 const subscribeToInvalidations = () => {
-  const subscriber = pubSubRedis.getInstance().subClient;
-  if (!subscriber) return;
+  const subscriber = getPubSub().subClient;
+  if (!subscriber || invalidationSubscriptionStarted) return;
+  invalidationSubscriptionStarted = true;
 
   void subscriber
     .subscribe(INVALIDATION_CHANNEL, (rawMessage) => {
@@ -282,14 +301,13 @@ const subscribeToInvalidations = () => {
       }
     })
     .catch((error) => {
+      invalidationSubscriptionStarted = false;
       console.warn("Unable to subscribe to L1 cache invalidations", error);
     });
 };
 
-subscribeToInvalidations();
-
 const releaseLock = async (lockKey: string, token: string) => {
-  await redis.eval(
+  await getRedis().eval(
     `if redis.call("GET", KEYS[1]) == ARGV[1] then
        return redis.call("DEL", KEYS[1])
      end
@@ -304,7 +322,7 @@ const waitForL2Value = async (key: string, lockKey: string) => {
   while (Date.now() < deadline) {
     // Jitter prevents waiting instances from polling Redis in lockstep.
     await sleep(delayMs + Math.floor(Math.random() * 20));
-    const values = await redis.mGet([key, lockKey]);
+    const values = await getRedis().mGet([key, lockKey]);
     const cached = values[0] ?? null;
     const activeLock = values[1] ?? null;
     if (cached !== null) return cached;
@@ -333,7 +351,7 @@ const startCacheLoad = <T>(options: CacheLoadOptions<T>): Promise<T> => {
   const request = (async () => {
     // The Redis lookup itself is inside single-flight. When L1 expires under
     // heavy concurrency, one worker emits one L2 GET instead of one per request.
-    const cached = await redis.get(key);
+    const cached = await getRedis().get(key);
     if (cached !== null) {
       const decoded = decode(cached);
       if (!flight.invalidated) {
@@ -352,7 +370,7 @@ const startCacheLoad = <T>(options: CacheLoadOptions<T>): Promise<T> => {
     const lockKey = `cache:fill-lock:${key}`;
     const lockToken = randomUUID();
     let ownsLock =
-      (await redis.set(lockKey, lockToken, { NX: true, PX: LOCK_TTL_MS })) ===
+      (await getRedis().set(lockKey, lockToken, { NX: true, PX: LOCK_TTL_MS })) ===
       "OK";
 
     if (!ownsLock) {
@@ -375,7 +393,7 @@ const startCacheLoad = <T>(options: CacheLoadOptions<T>): Promise<T> => {
       // The first owner may have failed. Make one takeover attempt after its
       // lock/wait period instead of letting every instance query MongoDB.
       ownsLock =
-        (await redis.set(lockKey, lockToken, { NX: true, PX: LOCK_TTL_MS })) ===
+        (await getRedis().set(lockKey, lockToken, { NX: true, PX: LOCK_TTL_MS })) ===
         "OK";
     }
 
@@ -389,7 +407,7 @@ const startCacheLoad = <T>(options: CacheLoadOptions<T>): Promise<T> => {
       if (flight.invalidated) return freshData;
 
       if (tags.length > 0) {
-        const multi = redis.multi();
+        const multi = getRedis().multi();
         multi.set(key, raw, { EX: ttl });
         for (const tag of tags.map(tagName)) {
           multi.sAdd(tag, key);
@@ -397,7 +415,7 @@ const startCacheLoad = <T>(options: CacheLoadOptions<T>): Promise<T> => {
         }
         await multi.exec();
       } else {
-        await redis.set(key, raw, { EX: ttl });
+        await getRedis().set(key, raw, { EX: ttl });
       }
       if (!flight.invalidated) {
         writeL1(
@@ -445,7 +463,24 @@ const loadCachedValue = async <T>(
   return waitForPromise(startCacheLoad(options), signal);
 };
 
-export const cacheService = {
+@Injectable()
+export class CacheService implements OnModuleInit {
+  constructor(
+    @Inject(REDIS_CLIENT)
+    redisConnection: RedisProvider,
+    @Inject(PUBSUB_REDIS_CLIENT)
+    pubSubConnection: PubSubRedisProvider,
+  ) {
+    // The process-local L1 and single-flight maps are intentionally shared by
+    // the Nest provider and the standalone worker/script compatibility facade.
+    redis = redisConnection;
+    pubSub = pubSubConnection;
+  }
+
+  onModuleInit() {
+    subscribeToInvalidations();
+  }
+
   async getOrSet<T>(
     key: string,
     fetchFn: () => Promise<T>,
@@ -465,18 +500,18 @@ export const cacheService = {
       },
       signal,
     );
-  },
+  }
 
   async delete(key: string) {
     invalidateL1Key(key);
-    const result = await redis.unlink(key);
+    const result = await getRedis().unlink(key);
     await publishInvalidation({ type: "key", value: key });
     return result;
-  },
+  }
 
   async deletePattern(pattern: string) {
     let batch: string[] = [];
-    for await (const key of redis.scanIterator({
+    for await (const key of getRedis().scanIterator({
       TYPE: "string",
       MATCH: pattern,
     })) {
@@ -484,7 +519,7 @@ export const cacheService = {
       invalidateL1Key(normalizedKey);
       batch.push(normalizedKey);
       if (batch.length >= 500) {
-        await redis.unlink(batch);
+        await getRedis().unlink(batch);
         await Promise.all(
           batch.map((value) => publishInvalidation({ type: "key", value })),
         );
@@ -492,12 +527,12 @@ export const cacheService = {
       }
     }
     if (batch.length > 0) {
-      await redis.unlink(batch);
+      await getRedis().unlink(batch);
       await Promise.all(
         batch.map((value) => publishInvalidation({ type: "key", value })),
       );
     }
-  },
+  }
 
   async getTracker(key: string) {
     const local = readL1<string>(key);
@@ -514,8 +549,8 @@ export const cacheService = {
     };
 
     const request = (async () => {
-      await redis.set(key, "1", { NX: true });
-      const version = await redis.get(key);
+      await getRedis().set(key, "1", { NX: true });
+      const version = await getRedis().get(key);
       const normalizedVersion = version ?? "1";
       if (!flight.invalidated) {
         writeL1(
@@ -532,10 +567,10 @@ export const cacheService = {
     flight.promise = request;
     inFlight.set(flightKey, flight);
     return request;
-  },
+  }
 
   async invalidateGetTracker(key: string) {
-    const newVersion = await redis.incr(key);
+    const newVersion = await getRedis().incr(key);
     invalidateL1Key(key);
     const normalizedVersion = String(newVersion);
     writeL1(
@@ -546,7 +581,7 @@ export const cacheService = {
     );
     await publishInvalidation({ type: "key", value: key });
     return newVersion;
-  },
+  }
 
   async getOrSetWithTag<T>(
     key: string,
@@ -569,7 +604,7 @@ export const cacheService = {
       },
       signal,
     );
-  },
+  }
 
   async getOrSetRawWithTag<T>(
     key: string,
@@ -600,7 +635,7 @@ export const cacheService = {
       },
       signal,
     );
-  },
+  }
 
   async invalidateTag(tags: string[]) {
     const tagKeys = tags.map(tagName);
@@ -610,7 +645,7 @@ export const cacheService = {
     // One atomic Redis command reads the exact tag sets and unlinks their
     // members. There is no keyspace SCAN and no fill/invalidation race between
     // separate SMEMBERS and UNLINK round-trips.
-    const removedKeys = (await redis.eval(INVALIDATE_TAGS_SCRIPT, {
+    const removedKeys = (await getRedis().eval(INVALIDATE_TAGS_SCRIPT, {
       keys: tagKeys,
       arguments: [],
     })) as string[];
@@ -622,7 +657,7 @@ export const cacheService = {
         publishInvalidation({ type: "tag-prefix", value: tagKey }),
       ),
     );
-  },
+  }
 
   async writeThrough<T>(
     key: string,
@@ -631,9 +666,9 @@ export const cacheService = {
   ) {
     const result = await dbAction();
     const raw = JSON.stringify(result);
-    await redis.set(key, raw, { EX: ttl });
+    await getRedis().set(key, raw, { EX: ttl });
     writeL1(key, result, Buffer.byteLength(raw), ttl);
     await publishInvalidation({ type: "key", value: key });
     return result;
-  },
-};
+  }
+}

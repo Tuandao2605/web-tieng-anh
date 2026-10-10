@@ -1,7 +1,7 @@
 import { Worker } from "bullmq";
 import { QUEUE_NAME } from "../constants/queue.constants";
 import type { SyncDeckJob } from "../queues/search-index.queue";
-import { elasticsearchService } from "../services/elasticsearch.service";
+import type { ElasticsearchService } from "../services/elasticsearch.service";
 import { bullmqClient } from "../utils/bullmq";
 import { assertBackgroundWorkerRole } from "../utils/backgroundRuntime";
 
@@ -12,14 +12,16 @@ const positiveNumberFromEnv = (value: string | undefined, fallback: number) => {
 
 let worker: Worker<SyncDeckJob> | null = null;
 
-export const startSearchIndexWorker = () => {
+export const startSearchIndexWorker = (
+  searchIndex: ElasticsearchService,
+) => {
   assertBackgroundWorkerRole();
   if (worker || process.env.ENABLE_SEARCH_INDEX_WORKER === "false") return;
 
   worker = new Worker<SyncDeckJob>(
     QUEUE_NAME.SEARCH_INDEX,
     async (job) => {
-      await elasticsearchService.syncDeck(
+      await searchIndex.syncDeck(
         job.data.deckId,
         job.data.mutationVersion,
       );

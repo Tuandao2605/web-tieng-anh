@@ -6,13 +6,24 @@ import {
   OnApplicationShutdown,
 } from "@nestjs/common";
 import { prisma } from "../libs/prisma";
-import { cacheService } from "../services/cache.service";
+import { CacheService } from "../services/cache.service";
+import {
+  ElasticsearchService,
+  elasticsearchClient,
+} from "../services/elasticsearch.service";
 import { closeBullMqConnections } from "../utils/bullmq";
-import { closeRedisConnections, redisClient } from "../utils/redis";
+import {
+  closeRedisConnections,
+  pubSubRedis,
+  redisClient,
+} from "../utils/redis";
 import { closeSearchIndexQueue } from "../queues/search-index.queue";
-import { closeSocketServer } from "../web-socket/socket-server";
+import { RateLimitService } from "../services/rateLimit.service";
 import {
   CACHE_SERVICE,
+  ELASTICSEARCH_CLIENT,
+  ELASTICSEARCH_SERVICE,
+  PUBSUB_REDIS_CLIENT,
   PRISMA_CLIENT,
   REDIS_CLIENT,
 } from "./infrastructure.tokens";
@@ -25,7 +36,6 @@ class InfrastructureLifecycle implements OnApplicationShutdown {
 
   async onApplicationShutdown(): Promise<void> {
     const appResources = await Promise.allSettled([
-      closeSocketServer(),
       closeSearchIndexQueue(),
       closeBullMqConnections(),
     ]);
@@ -50,9 +60,26 @@ class InfrastructureLifecycle implements OnApplicationShutdown {
   providers: [
     { provide: PRISMA_CLIENT, useValue: prisma },
     { provide: REDIS_CLIENT, useFactory: () => redisClient.getInstance() },
-    { provide: CACHE_SERVICE, useValue: cacheService },
+    {
+      provide: PUBSUB_REDIS_CLIENT,
+      useFactory: () => pubSubRedis.getInstance(),
+    },
+    { provide: ELASTICSEARCH_CLIENT, useValue: elasticsearchClient },
+    CacheService,
+    { provide: CACHE_SERVICE, useExisting: CacheService },
+    ElasticsearchService,
+    { provide: ELASTICSEARCH_SERVICE, useExisting: ElasticsearchService },
+    RateLimitService,
     InfrastructureLifecycle,
   ],
-  exports: [PRISMA_CLIENT, REDIS_CLIENT, CACHE_SERVICE],
+  exports: [
+    PRISMA_CLIENT,
+    REDIS_CLIENT,
+    PUBSUB_REDIS_CLIENT,
+    ELASTICSEARCH_CLIENT,
+    CACHE_SERVICE,
+    ELASTICSEARCH_SERVICE,
+    RateLimitService,
+  ],
 })
 export class InfrastructureModule {}

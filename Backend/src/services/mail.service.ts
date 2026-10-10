@@ -1,3 +1,4 @@
+import { Injectable } from "@nestjs/common";
 import nodemailer from "nodemailer";
 import SMTPTransport from "nodemailer/lib/smtp-transport";
 import ejs from "ejs";
@@ -19,7 +20,8 @@ const transporter = nodemailer.createTransport({
   },
 } as SMTPTransport.Options);
 
-export const mailService = {
+@Injectable()
+export class MailService {
   async sendMail(to: string, subject: string, message: string) {
     const info = await transporter.sendMail({
       from: `"${SMTP_FROM_NAME}" <${SMTP_FROM}>`,
@@ -28,7 +30,7 @@ export const mailService = {
       html: message, // HTML version of the message
     });
     return info;
-  },
+  }
   async sendWithTemplate(
     to: string,
     subject: string,
@@ -59,5 +61,5 @@ export const mailService = {
     } catch {
       return false;
     }
-  },
-};
+  }
+}
