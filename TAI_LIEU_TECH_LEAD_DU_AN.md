@@ -185,9 +185,7 @@ Bootstrap hiện nằm tại [main.ts](Backend/src/main.ts). Redis session/flash
 
 ### 5.3 Module đang là playground/legacy
 
-- `Backend/src/consumer/*` và RabbitMQ utilities: các consumer mẫu, không nằm trong HTTP route path hiện tại.
-- `Backend/src/web-socket/socket-server.ts`: Socket.IO demo mở cổng riêng; auth/rate-limit cần được hoàn thiện trước khi dùng như kênh production.
-- `Backend/src/web-socket/index.ts`: implementation `ws` khác, không phải entry point hiện tại.
+- `Backend/src/modules/web/socket-io.gateway.ts`: Socket.IO gateway hiện tại; cần hoàn thiện auth/rate-limit trước khi dùng như kênh production.
 - `PUT /api/v1/posts`: controller hiện chỉ trả `{}` và route chưa có auth; đây là placeholder, không phải feature hoàn chỉnh.
 - Một số dependency SQL/MariaDB còn trong package nhưng persistence chính hiện là MongoDB.
 
@@ -801,29 +799,39 @@ Giải pháp hiện tại là positive-only cache. Token rác không chiếm RAM
 
 ### 13.1 Kết quả kiểm thử đã quan sát
 
-Trong lần chạy product test gần nhất của code hiện tại:
+Lần chạy kiểm chứng hiện tại ngày **2026-10-08**, bằng `npm run test:product` trên stack local:
 
-- Backend unit/integration: **24/24 pass**.
-- Product stack: **15/15 pass** gồm suite cha và 14 subtest.
-- 1.000 HTTP request, concurrency 50 qua stack local: khoảng **1.867 request/giây**, `p50 ≈ 23,64 ms`, `p95 ≈ 43,83 ms`, `p99 ≈ 56,82 ms`.
-- Khi bơm 60 ms latency một chiều qua proxy, `p50` khoảng **125,89 ms**, phù hợp với tối thiểu một lượt đi-về mạng.
-- Integration Redis gửi **300 submission đồng thời** và kiểm tra tổng đúng, chứng minh Lua không làm mất update trong kịch bản test.
+- Lệnh chuẩn `npm run test:product` pass: **15/15 product subtest** (16/16 theo TAP nếu tính suite cha), gồm backend typecheck/build và frontend build.
+- Test `GET /api/v1/sets` qua Nginx gửi **1.000 request với concurrency 50**. Subtest tải pass: **1.513,57 request/giây**, `p50 = 30,94 ms`, `p95 = 52,13 ms`, `p99 = 72,56 ms`; cả 1.000 response đều là HTTP 200.
+- Benchmark phụ ngắn với 100 request, concurrency 10: Node trực tiếp, auth + warm cache đạt **1.963,74 request/giây**; Nginx, auth + warm cache đạt **1.267,92 request/giây**; Nginx, anonymous + warm cache đạt **1.048,90 request/giây**. Chỉ nên xem là số tham khảo.
+- Khi bơm 60 ms latency một chiều qua proxy, `p50 = 127,33 ms`.
+- Nginx phân phối request qua cả hai Node; khi dừng Node 1, **80/80** request hội tụ thành công và các request ổn định tiếp theo được phục vụ bởi Node 2.
 
-Các con số này là baseline máy local, không phải SLA. Chúng thay đổi theo CPU, Docker, warm/cold cache, số connection, network và dataset.
+Đây là một lần đo trên máy local, không phải SLA hay benchmark ổn định. Số liệu thay đổi theo CPU, Docker, cache, network và dataset.
 
-### 13.2 Điều có thể kết luận và không thể kết luận
+### 13.2 Đối chiếu các claim hiệu năng và công nghệ
 
-Có thể kết luận:
+| Claim | Đối chiếu code/test | Kết luận |
+| --- | --- | --- |
+| React 19, TypeScript, Node.js, MongoDB 7 replica set, Redis, Elasticsearch 8, BullMQ, Nginx, Docker | Các dependency và cấu hình tương ứng có trong repo. API dùng **NestJS + Fastify**, không phải Express. Replica set trong compose hiện chỉ có một member. | Stack cơ bản đúng nếu sửa “Express” thành “NestJS + Fastify” và mô tả replica set là cấu hình local một member. |
+| Token Bucket Lua và Nginx keep-alive | Có Lua token bucket trong Redis và upstream keep-alive trong Nginx. | Tính năng được triển khai; chưa có baseline trước/sau để quy kết mức tăng throughput cho chúng. |
+| Ngưỡng pass của HTTP load test | Mặc định test chỉ yêu cầu tối thiểu 50 req/s và p99 không quá 2.000 ms. | Đây là smoke/performance check lỏng, không phải benchmark gate cho 4.290 req/s hay p97.5. |
+| Tăng 189% từ 1.483 lên 4.290 req/s | Repo không lưu kết quả đo tái lập cho cả hai mốc. Lần kiểm chứng hiện tại đo 1.513,57 req/s ở 1.000 request, concurrency 50. Phép tính 1.483 → 4.290 tương đương tăng khoảng 189%, nhưng hai mốc chưa được xác minh. | Chưa đủ bằng chứng để ghi như kết quả đã đạt. |
+| Giảm p97.5 latency 87% | Test ghi `p50`, `p95`, `p99`, không ghi `p97.5`; cũng không có cặp số trước/sau. | Chưa xác minh. |
+| Không timeout ở 1.000 concurrent connections | Product test dùng concurrency 50 cho HTTP load; không có kịch bản 1.000 concurrent connections. | Chưa xác minh. Không suy rộng kết quả 1.000 request thành 1.000 kết nối đồng thời. |
+| L1 LRU + L2 Redis, single-flight, distributed fill lock, Pub/Sub và versioned invalidation | Các cơ chế này có trong `cache.service.ts` và luồng cache danh sách. Version bump tránh scan keyspace O(1); invalidation tag vẫn phụ thuộc số key thuộc tag. | Được triển khai. Nên giới hạn claim O(1) cho đường invalidation bằng version. |
+| BullMQ + Elasticsearch, diacritic-insensitive search, `external_gte` | Có queue/worker, analyzer `asciifolding` và `external_gte`. Analyzer dùng tokenizer `ngram` (không phải `edge_ngram`). Test xác nhận luồng index/search hoạt động nhưng không đặt ngưỡng latency tìm kiếm. | Pipeline và tìm kiếm không dấu được triển khai; “edge n-gram” và “sub-second” chưa được xác nhận bởi code/test hiện tại. |
 
-- Các invariant đã nêu hoạt động trong môi trường test nhiều Node.
-- Pipeline/Lua/idempotency không chỉ đúng về lý thuyết mà đã có test race.
-- Nginx balancing, failover thụ động, edge rejection và eventual search đã được exercise.
+### 13.3 Điều có thể kết luận và không thể kết luận
 
-Không thể kết luận:
+Lần đo hiện tại xác nhận route đọc danh sách bộ thẻ trả 1.000 response thành công ở concurrency 50 trong môi trường local. Test search cũng xác nhận deck được đưa qua BullMQ vào Elasticsearch và có thể tìm thấy.
 
-- Hệ thống chắc chắn chịu được cùng RPS trên cloud production.
-- Elasticsearch/Mongo/Redis không có bottleneck với hàng triệu record.
-- p99 production bằng p99 local.
+Chưa thể kết luận:
+
+- Các mức 4.290 req/s, giảm p97.5 87%, hoặc không timeout ở 1.000 kết nối đồng thời.
+- Tìm kiếm có latency dưới một giây; test hiện tại kiểm tra kết quả, không đo SLA latency search.
+- Product test hiện xác nhận Nginx đã gửi request tới cả hai Node và failover thành công trong môi trường local; đây chưa phải bằng chứng cho SLA failover production.
+- Cùng RPS trên cloud production, không có bottleneck khi dữ liệu lớn, hoặc p99 production bằng p99 local.
 - Hệ thống đạt high availability khi Redis/Mongo chỉ có một node thực tế.
 
 ---
