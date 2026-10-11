@@ -9,6 +9,7 @@ type SetOptions = {
 class InMemoryRedis {
   readonly values = new Map<string, string>();
   readonly sets = new Map<string, Set<string>>();
+  readonly hashes = new Map<string, Map<string, string>>();
   isOpen = true;
 
   async get(key: string) {
@@ -94,9 +95,65 @@ class InMemoryRedis {
   }
 
   async eval(
-    _script: string,
+    script: string,
     options: { keys: string[]; arguments: string[] },
   ) {
+    if (script.includes("ACQUIRE_CACHE_FILL_LOCK_V1")) {
+      const [lockKey, generationKey, ...activeFillKeys] = options.keys;
+      if (!lockKey || !generationKey || this.values.has(lockKey)) return null;
+      const generation = Number(this.values.get(generationKey) ?? 0) + 1;
+      const generationValue = String(generation);
+      this.values.set(generationKey, generationValue);
+      this.values.set(lockKey, generationValue);
+      const key = options.arguments[1];
+      if (key) {
+        for (const activeFillKey of activeFillKeys) {
+          const fills = this.hashes.get(activeFillKey) ?? new Map<string, string>();
+          fills.set(key, generationValue);
+          this.hashes.set(activeFillKey, fills);
+        }
+      }
+      return generationValue;
+    }
+
+    if (script.includes("STORE_TAGGED_CACHE_V2")) {
+      const [cacheKey, indexKey, lockKey, ...tagKeys] = options.keys;
+      const value = options.arguments[0];
+      const generation = options.arguments[2];
+      if (
+        !cacheKey ||
+        !indexKey ||
+        !lockKey ||
+        value === undefined ||
+        this.values.get(lockKey) !== generation
+      ) {
+        return 0;
+      }
+      this.values.set(cacheKey, value);
+      for (const tagKey of tagKeys) {
+        const members = this.sets.get(tagKey) ?? new Set<string>();
+        members.add(cacheKey);
+        this.sets.set(tagKey, members);
+        const keyTags = this.sets.get(indexKey) ?? new Set<string>();
+        keyTags.add(tagKey);
+        this.sets.set(indexKey, keyTags);
+      }
+      return 1;
+    }
+
+    if (script.includes("RELEASE_CACHE_FILL_LOCK_V1")) {
+      const [lockKey, ...activeFillKeys] = options.keys;
+      const [generation, key] = options.arguments;
+      if (lockKey && this.values.get(lockKey) === generation) {
+        this.values.delete(lockKey);
+      }
+      for (const activeFillKey of activeFillKeys) {
+        const fills = this.hashes.get(activeFillKey);
+        if (key && fills && fills.get(key) === generation) fills.delete(key);
+      }
+      return 1;
+    }
+
     const [key] = options.keys;
     const [expectedValue] = options.arguments;
     if (key && this.values.get(key) === expectedValue) {
@@ -129,6 +186,7 @@ class InMemoryRedis {
   clear() {
     this.values.clear();
     this.sets.clear();
+    this.hashes.clear();
   }
 }
 

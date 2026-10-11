@@ -188,7 +188,7 @@ export class UsersService {
       },
     });
     if (user) {
-      this.cache.invalidateGetTracker(CACHE.USER.TRACKERS.LIST_VERSION);
+      await this.cache.invalidateGetTracker(CACHE.USER.TRACKERS.LIST_VERSION);
       return user;
     }
     return null;
@@ -233,12 +233,12 @@ export class UsersService {
               password: true,
             },
           });
-          await this.cache.invalidateGetTracker(
-            CACHE.USER.TRACKERS.LIST_VERSION,
-          );
           return updated;
         },
+        undefined,
+        CACHE.USER.TAGS.DETAIL(id),
       );
+      await this.cache.invalidateGetTracker(CACHE.USER.TRACKERS.LIST_VERSION);
       await this.searchIndex.syncDecksByUser(id).catch((error) => {
         console.warn("Unable to sync deck author to Elasticsearch", error);
       });

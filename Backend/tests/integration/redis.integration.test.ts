@@ -64,6 +64,17 @@ test("Redis-backed application behavior", async (suite) => {
     );
 
     await suite.test(
+      "tracker reads observe another Redis increment without L1 delay",
+      async () => {
+        const key = `test:tracker:${Date.now()}`;
+        assert.equal(await cacheService.getTracker(key), "1");
+        await redis.incr(key);
+        assert.equal(await cacheService.getTracker(key), "2");
+        await redis.unlink(key);
+      },
+    );
+
+    await suite.test(
       "GETDEL allows exactly one concurrent consumer",
       async () => {
         await redis.set("test:refresh-token", "token-payload");
@@ -106,6 +117,225 @@ test("Redis-backed application behavior", async (suite) => {
 
         await cacheService.getOrSetWithTag(key, fetchValue, tags, 30);
         assert.equal(fetches, 2);
+      },
+    );
+
+    await suite.test(
+      "monotonic Redis fencing rejects a fill after remote key invalidation",
+      async () => {
+        const key = `test:cache-fenced:${Date.now()}`;
+        const lockKey = `cache:fill-lock:${key}`;
+        let beginFetch: (() => void) | undefined;
+        let finishFetch: (() => void) | undefined;
+        const fetchStarted = new Promise<void>((resolve) => {
+          beginFetch = resolve;
+        });
+        const fetchGate = new Promise<void>((resolve) => {
+          finishFetch = resolve;
+        });
+
+        const oldFill = cacheService.getOrSet(key, async () => {
+          beginFetch?.();
+          await fetchGate;
+          return "stale-source-value";
+        });
+
+        try {
+          await fetchStarted;
+          const oldGeneration = await redis.get(lockKey);
+          assert.match(oldGeneration ?? "", /^[1-9]\d*$/);
+
+          // Simulate another instance's atomic delete without delivering its
+          // Pub/Sub event to this process's local in-flight map.
+          await redis.unlink(lockKey);
+          finishFetch?.();
+
+          assert.equal(await oldFill, "stale-source-value");
+          assert.equal(await redis.get(key), null);
+
+          await cacheService.getOrSet(key, async () => "fresh-source-value");
+          const newGeneration = await redis.get("cache:fill-generation:v1");
+          assert.ok(Number(newGeneration) > Number(oldGeneration));
+          assert.equal(await redis.get(key), JSON.stringify("fresh-source-value"));
+        } finally {
+          finishFetch?.();
+        }
+      },
+    );
+
+    await suite.test(
+      "tag invalidation revokes registered in-flight generations in Redis",
+      async () => {
+        const key = `test:cache-tag-fenced:${Date.now()}`;
+        const tag = `tag-fenced-${Date.now()}`;
+        const lockKey = `cache:fill-lock:${key}`;
+        const activeFillKey = `cache:tag-fills:v1:tag:${tag}`;
+        let beginFetch: (() => void) | undefined;
+        let finishFetch: (() => void) | undefined;
+        const fetchStarted = new Promise<void>((resolve) => {
+          beginFetch = resolve;
+        });
+        const fetchGate = new Promise<void>((resolve) => {
+          finishFetch = resolve;
+        });
+
+        const oldFill = cacheService.getOrSetWithTag(
+          key,
+          async () => {
+            beginFetch?.();
+            await fetchGate;
+            return "stale-tagged-value";
+          },
+          [tag],
+        );
+
+        try {
+          await fetchStarted;
+          const generation = await redis.get(lockKey);
+          assert.match(generation ?? "", /^[1-9]\d*$/);
+          assert.equal(await redis.hGet(activeFillKey, key), generation);
+
+          await cacheService.invalidateTag([tag]);
+          assert.equal(await redis.get(lockKey), null);
+          assert.equal(await redis.hGet(activeFillKey, key), null);
+          finishFetch?.();
+
+          assert.equal(await oldFill, "stale-tagged-value");
+          assert.equal(await redis.get(key), null);
+        } finally {
+          finishFetch?.();
+        }
+      },
+    );
+
+    await suite.test(
+      "write-through advances the Redis fence and wins over an older active fill",
+      async () => {
+        const key = `test:cache-write-through-fenced:${Date.now()}`;
+        const tag = `write-through-fenced-${Date.now()}`;
+        let beginFetch: (() => void) | undefined;
+        let finishFetch: (() => void) | undefined;
+        const fetchStarted = new Promise<void>((resolve) => {
+          beginFetch = resolve;
+        });
+        const fetchGate = new Promise<void>((resolve) => {
+          finishFetch = resolve;
+        });
+
+        const oldFill = cacheService.getOrSetWithTag(
+          key,
+          async () => {
+            beginFetch?.();
+            await fetchGate;
+            return "old-source-value";
+          },
+          [tag],
+        );
+
+        try {
+          await fetchStarted;
+          const oldGeneration = Number(
+            await redis.get("cache:fill-generation:v1"),
+          );
+          await cacheService.writeThrough(
+            key,
+            async () => "new-database-value",
+            30,
+            [tag],
+          );
+          finishFetch?.();
+
+          assert.equal(await oldFill, "old-source-value");
+          assert.equal(await redis.get(key), JSON.stringify("new-database-value"));
+          assert.ok(
+            Number(await redis.get("cache:fill-generation:v1")) > oldGeneration,
+          );
+          assert.notEqual(
+            await redis.zScore(`cache:tag-set:v2:tag:${tag}`, key),
+            null,
+          );
+        } finally {
+          finishFetch?.();
+          await cacheService.delete(key);
+        }
+      },
+    );
+
+    await suite.test(
+      "tagged cache deletion and expiry prune reverse tag indexes",
+      async () => {
+        const prefixKey = `test:cache-tag-prefix:${Date.now()}`;
+        await cacheService.getOrSetWithTag(
+          prefixKey,
+          async () => "not-prefix-invalidated",
+          ["exact-user2"],
+          30,
+        );
+        await cacheService.invalidateTag(["exact-user"]);
+        assert.notEqual(await redis.get(prefixKey), null);
+        await cacheService.invalidateTag(["exact-user2"]);
+        assert.equal(await redis.get(prefixKey), null);
+
+        const deleteKey = `test:cache-tag-delete:${Date.now()}`;
+        const deleteTags = ["integration-delete-a", "integration-delete-b"];
+        await cacheService.getOrSetWithTag(
+          deleteKey,
+          async () => ({ value: "tagged" }),
+          deleteTags,
+          30,
+        );
+
+        const tagA = `cache:tag-set:v2:tag:${deleteTags[0]}`;
+        const tagB = `cache:tag-set:v2:tag:${deleteTags[1]}`;
+        assert.notEqual(await redis.zScore(tagA, deleteKey), null);
+        assert.notEqual(await redis.zScore(tagB, deleteKey), null);
+        await cacheService.delete(deleteKey);
+        assert.equal(await redis.zScore(tagA, deleteKey), null);
+        assert.equal(await redis.zScore(tagB, deleteKey), null);
+
+        const invalidateKey = `test:cache-tag-invalidate:${Date.now()}`;
+        const invalidateTags = ["integration-invalidate-a", "integration-invalidate-b"];
+        await cacheService.getOrSetWithTag(
+          invalidateKey,
+          async () => ({ value: "tagged" }),
+          invalidateTags,
+          30,
+        );
+        const remainingTag = `cache:tag-set:v2:tag:${invalidateTags[1]}`;
+        await cacheService.invalidateTag([invalidateTags[0]!]);
+        assert.equal(await redis.get(invalidateKey), null);
+        assert.equal(await redis.zScore(remainingTag, invalidateKey), null);
+
+        const expiringKey = `test:cache-tag-expiring:${Date.now()}`;
+        const anchorKey = `test:cache-tag-anchor:${Date.now()}`;
+        const freshKey = `test:cache-tag-fresh:${Date.now()}`;
+        const sharedTag = "integration-expiry-prune";
+        const sharedTagKey = `cache:tag-set:v2:tag:${sharedTag}`;
+        await cacheService.getOrSetWithTag(
+          expiringKey,
+          async () => "expires-first",
+          [sharedTag],
+          1,
+        );
+        await cacheService.getOrSetWithTag(
+          anchorKey,
+          async () => "keeps-tag-set-alive",
+          [sharedTag],
+          30,
+        );
+        // Tag scores carry a one-second safety grace beyond Redis key expiry.
+        await wait(2_100);
+        await cacheService.getOrSetWithTag(
+          freshKey,
+          async () => "fresh",
+          [sharedTag],
+          30,
+        );
+
+        assert.equal(await redis.get(expiringKey), null);
+        assert.equal(await redis.zScore(sharedTagKey, expiringKey), null);
+        assert.notEqual(await redis.zScore(sharedTagKey, anchorKey), null);
+        assert.notEqual(await redis.zScore(sharedTagKey, freshKey), null);
       },
     );
 

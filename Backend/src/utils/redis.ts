@@ -33,6 +33,9 @@ const logRedisError = (name: string, error: unknown) => {
 };
 
 const createRedisConnection = (name: string): AppRedisClient => {
+  // This is a single-node Redis client. Cache Lua scripts also touch multiple
+  // logical keys and are not Redis Cluster hash-slot safe; use a standalone
+  // endpoint here until cache keys/invalidation are redesigned for Cluster.
   const client = createClient({
     url: getRedisUrl(),
     commandOptions: { timeout: REDIS_COMMAND_TIMEOUT_MS },

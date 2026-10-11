@@ -45,6 +45,9 @@ const configuredSetListSWRMs = Number(process.env.SET_LIST_CACHE_SWR_MS);
 const SET_LIST_SWR_MS = Number.isFinite(configuredSetListSWRMs)
   ? Math.min(60_000, Math.max(0, configuredSetListSWRMs))
   : 5_000;
+const SET_NOT_FOUND_CACHE_TTL_SECONDS = Math.ceil(
+  positiveNumberFromEnv(process.env.SET_NOT_FOUND_CACHE_TTL_SECONDS, 30),
+);
 const sleep = (milliseconds: number) =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -343,7 +346,7 @@ export class StudyService {
 
   async createSet(input: CreateSetInput) {
     const newSet = await this.studyRepo.createSet(input);
-    await this.invalidateSetCaches(input.userId, undefined, newSet.isPublic);
+    await this.invalidateSetCaches(input.userId, newSet.id, newSet.isPublic);
     await this.scheduleDeckSync(newSet.id, newSet.updatedAt.getTime());
     return newSet;
   }
@@ -409,17 +412,15 @@ export class StudyService {
     const version = await this.cache.getTracker(setDetailVersionKey(setId));
     const set = await this.cache.getOrSetWithTag(
       `set:${setId}:v${version}:cards`,
-      async () => {
-        const set = await this.studyRepo.findSetById(setId);
-        if (!set) throw new UpdatedError("Flashcard set not found", 404);
-        return set;
-      },
+      () => this.studyRepo.findSetById(setId),
       [],
       3600,
       signal,
+      0,
+      SET_NOT_FOUND_CACHE_TTL_SECONDS,
     );
 
-    if (!set.isPublic && set.userId !== userId) {
+    if (!set || (!set.isPublic && set.userId !== userId)) {
       // Do not reveal whether a private deck exists.
       throw new UpdatedError("Flashcard set not found", 404);
     }
